@@ -648,7 +648,8 @@ public class ShuffleHandler extends AuxiliaryService {
     	Path mapOutputFileName = null;
     	Path indexFileName = null;
     	IndexRecord info = null;
-    	
+    	String replicationBase = "/replication/" + mapId;
+  		
     	if(!replicationTaskToOutputPathMap.containsKey(mapId)) {
     		// Index file
     		indexFileName =
@@ -667,7 +668,7 @@ public class ShuffleHandler extends AuxiliaryService {
     		info =
     				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
     		mapOutputFileName =
-    				new Path(base + "/file.out");
+    				new Path(replicationBase + "/file.out");
     	}
 		LOG.info("(Rony shuffleHandler.getMapOutputInfo) " 
     	+ base + " : " + mapOutputFileName + " : " + indexFileName);
