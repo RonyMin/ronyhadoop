@@ -531,13 +531,11 @@ public class ShuffleHandler extends AuxiliaryService {
       final List<String> mapIds = splitMaps(q.get("map"));
       final List<String> reduceQ = q.get("reduce");
       final List<String> jobQ = q.get("job");
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("RECV: " + request.getUri() +
+        LOG.info("(Rony shuffleHandler.messageReceived) RECV: " + request.getUri() +
             "\n  mapId: " + mapIds +
             "\n  reduceId: " + reduceQ +
             "\n  jobId: " + jobQ +
             "\n  keepAlive: " + keepAliveParam);
-      }
 
       if (mapIds == null || reduceQ == null || jobQ == null) {
         sendError(ctx, "Required param job, map and reduce", BAD_REQUEST);
@@ -599,7 +597,6 @@ public class ShuffleHandler extends AuxiliaryService {
       // TODO refactor the following into the pipeline
       ChannelFuture lastMap = null;
       for (String mapId : mapIds) {
-    	  if(!replicationTaskToOutputPathMap.containsKey(mapId)) {
     		  try {
     			  MapOutputInfo info = mapOutputInfoMap.get(mapId);
     			  
@@ -618,9 +615,6 @@ public class ShuffleHandler extends AuxiliaryService {
     		  		sendError(ctx,errorMessage , INTERNAL_SERVER_ERROR);
     		  		return;
     		  	}
-    	  } else {
-    		  
-    	  }
       }
       lastMap.addListener(metrics);
       lastMap.addListener(ChannelFutureListener.CLOSE);
