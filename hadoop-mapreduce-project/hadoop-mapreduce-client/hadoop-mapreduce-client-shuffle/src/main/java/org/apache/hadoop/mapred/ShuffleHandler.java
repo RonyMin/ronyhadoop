@@ -658,9 +658,6 @@ public class ShuffleHandler extends AuxiliaryService {
 
     		mapOutputFileName =
     				lDirAlloc.getLocalPathToRead(base + "/file.out", conf);
-    		if (LOG.isDebugEnabled()) {
-    			LOG.debug(base + " : " + mapOutputFileName + " : " + indexFileName);
-    		}
     	} else {
     		// Since replicated MOF and its index are exist in HDFS,
     		// We cannot use LocalDirAllocator!
@@ -672,9 +669,8 @@ public class ShuffleHandler extends AuxiliaryService {
     		mapOutputFileName =
     				new Path(base + "/file.out");
     	}
-		if (LOG.isDebugEnabled()) {
-			LOG.debug(base + " : " + mapOutputFileName + " : " + indexFileName);
-		}
+		LOG.info("(Rony shuffleHandler.getMapOutputInfo) " 
+    	+ base + " : " + mapOutputFileName + " : " + indexFileName);
     	outputInfo = new MapOutputInfo(mapOutputFileName, info);
     	return outputInfo;
     }
@@ -687,12 +683,7 @@ public class ShuffleHandler extends AuxiliaryService {
       long contentLength = 0;
       for (String mapId : mapIds) {
     	  
-  		String base = null;  
-  		if(!replicationTaskToOutputPathMap.containsKey(mapId)) {		
-    		base = outputBaseStr + mapId;
-    	} else {
-    		base = "/replication/" + mapId;
-    	}
+  		String base = outputBaseStr + mapId; 
    	
 		MapOutputInfo outputInfo = getMapOutputInfo(base, mapId, reduce, user);
 		
