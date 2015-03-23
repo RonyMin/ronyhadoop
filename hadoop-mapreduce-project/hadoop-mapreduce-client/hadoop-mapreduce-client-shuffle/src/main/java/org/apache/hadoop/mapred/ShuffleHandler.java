@@ -41,8 +41,10 @@ import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -54,6 +56,8 @@ import javax.crypto.SecretKey;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.DataInputByteBuffer;
@@ -200,6 +204,10 @@ public class ShuffleHandler extends AuxiliaryService {
   boolean connectionKeepAliveEnabled = false;
   int connectionKeepAliveTimeOut;
   int mapOutputMetaInfoCacheSize;
+  
+  //Rony
+  public static Map<String, Path> replicationTaskToOutputPathMap = 
+		  new HashMap<String, Path>();
 
   @Metrics(about="Shuffle output metrics", context="mapred")
   static class ShuffleMetrics implements ChannelFutureListener {
@@ -494,6 +502,9 @@ public class ShuffleHandler extends AuxiliaryService {
     @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent evt)
         throws Exception {
+    	
+      updateReplicationMap();
+      
       HttpRequest request = (HttpRequest) evt.getMessage();
       if (request.getMethod() != GET) {
           sendError(ctx, METHOD_NOT_ALLOWED);
@@ -588,24 +599,28 @@ public class ShuffleHandler extends AuxiliaryService {
       // TODO refactor the following into the pipeline
       ChannelFuture lastMap = null;
       for (String mapId : mapIds) {
-        try {
-          MapOutputInfo info = mapOutputInfoMap.get(mapId);
-          if (info == null) {
-            info = getMapOutputInfo(outputBasePathStr, mapId, reduceId, user);
-          }
-          lastMap =
-              sendMapOutput(ctx, ch, user, mapId,
-                reduceId, info);
-          if (null == lastMap) {
-            sendError(ctx, NOT_FOUND);
-            return;
-          }
-        } catch (IOException e) {
-          LOG.error("Shuffle error :", e);
-          String errorMessage = getErrorMessage(e);
-          sendError(ctx,errorMessage , INTERNAL_SERVER_ERROR);
-          return;
-        }
+    	  if(!replicationTaskToOutputPathMap.containsKey(mapId)) {
+    		  try {
+    			  MapOutputInfo info = mapOutputInfoMap.get(mapId);
+    			  
+    			  if (info == null) {
+    				  info = getMapOutputInfo(outputBasePathStr, mapId, reduceId, user);
+    			  }
+    			  
+    			  lastMap = sendMapOutput(ctx, ch, user, mapId,reduceId, info);
+    			  if (null == lastMap) {
+    				  sendError(ctx, NOT_FOUND);
+    				  return;
+    			  }
+    		  	} catch (IOException e) {
+    		  		LOG.error("Shuffle error :", e);
+    		  		String errorMessage = getErrorMessage(e);
+    		  		sendError(ctx,errorMessage , INTERNAL_SERVER_ERROR);
+    		  		return;
+    		  	}
+    	  } else {
+    		  
+    	  }
       }
       lastMap.addListener(metrics);
       lastMap.addListener(ChannelFutureListener.CLOSE);
@@ -634,19 +649,40 @@ public class ShuffleHandler extends AuxiliaryService {
 
     protected MapOutputInfo getMapOutputInfo(String base, String mapId,
         int reduce, String user) throws IOException {
-      // Index file
-      Path indexFileName =
-          lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
-      IndexRecord info =
-          indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
+    	
+    	MapOutputInfo outputInfo = null;
+    	Path mapOutputFileName = null;
+    	Path indexFileName = null;
+    	IndexRecord info = null;
+    	
+    	if(!replicationTaskToOutputPathMap.containsKey(mapId)) {
+    		// Index file
+    		indexFileName =
+    				lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
+    		info =
+    				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
 
-      Path mapOutputFileName =
-          lDirAlloc.getLocalPathToRead(base + "/file.out", conf);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug(base + " : " + mapOutputFileName + " : " + indexFileName);
-      }
-      MapOutputInfo outputInfo = new MapOutputInfo(mapOutputFileName, info);
-      return outputInfo;
+    		mapOutputFileName =
+    				lDirAlloc.getLocalPathToRead(base + "/file.out", conf);
+    		if (LOG.isDebugEnabled()) {
+    			LOG.debug(base + " : " + mapOutputFileName + " : " + indexFileName);
+    		}
+    	} else {
+    		// Since replicated MOF and its index are exist in HDFS,
+    		// We cannot use LocalDirAllocator!
+    		// Instead, we use a path of MOF and its index in HDFS directly
+    		// To get its inputstream to read.
+    		indexFileName = new Path(base + "/file.out.index");
+    		info =
+    				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
+    		mapOutputFileName =
+    				new Path(base + "/file.out");
+    	}
+		if (LOG.isDebugEnabled()) {
+			LOG.debug(base + " : " + mapOutputFileName + " : " + indexFileName);
+		}
+    	outputInfo = new MapOutputInfo(mapOutputFileName, info);
+    	return outputInfo;
     }
 
     protected void populateHeaders(List<String> mapIds, String outputBaseStr,
@@ -656,23 +692,32 @@ public class ShuffleHandler extends AuxiliaryService {
 
       long contentLength = 0;
       for (String mapId : mapIds) {
-        String base = outputBaseStr + mapId;
-        MapOutputInfo outputInfo = getMapOutputInfo(base, mapId, reduce, user);
-        if (mapOutputInfoMap.size() < mapOutputMetaInfoCacheSize) {
-          mapOutputInfoMap.put(mapId, outputInfo);
-        }
-        // Index file
-        Path indexFileName =
-            lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
-        IndexRecord info =
-            indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
-        ShuffleHeader header =
-            new ShuffleHeader(mapId, info.partLength, info.rawLength, reduce);
-        DataOutputBuffer dob = new DataOutputBuffer();
-        header.write(dob);
+    	  
+  		String base = null;  
+  		if(!replicationTaskToOutputPathMap.containsKey(mapId)) {		
+    		base = outputBaseStr + mapId;
+    	} else {
+    		base = "/replication/" + mapId;
+    	}
+   	
+		MapOutputInfo outputInfo = getMapOutputInfo(base, mapId, reduce, user);
+		
+		if (mapOutputInfoMap.size() < mapOutputMetaInfoCacheSize) {
+			mapOutputInfoMap.put(mapId, outputInfo);
+		}
+		
+		// Index file
+		Path indexFileName =
+				lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
+		IndexRecord info =
+				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
+		ShuffleHeader header =
+				new ShuffleHeader(mapId, info.partLength, info.rawLength, reduce);
+		DataOutputBuffer dob = new DataOutputBuffer();
+		header.write(dob);
 
-        contentLength += info.partLength;
-        contentLength += dob.getLength();
+		contentLength += info.partLength;
+		contentLength += dob.getLength();
       }
 
       // Now set the response headers.
@@ -841,5 +886,39 @@ public class ShuffleHandler extends AuxiliaryService {
         sendError(ctx, INTERNAL_SERVER_ERROR);
       }
     }
+  }
+  
+  private FileSystem hdfs;
+  private Path replicationStorePath;
+  private FileStatus[] replicationTaskStatus;
+  
+  // Rony
+  public void updateReplicationMap() {
+
+	  Configuration job = new Configuration();
+	  job.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
+	  // job.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
+	  
+	  try {
+		this.hdfs = FileSystem.get(job);
+	  } catch (IOException e) {
+		e.printStackTrace();
+	  }
+	  
+	  this.replicationStorePath = new Path(job.get("fs.defaultFS")+"/replication");
+	  LOG.info("ShuffleHandler: Building replication task set...");
+	  try {
+		this.replicationTaskStatus = hdfs.listStatus(replicationStorePath);
+	  } catch (Exception e) {
+		e.printStackTrace();
+	  }
+		
+	  for(FileStatus fs : replicationTaskStatus) {
+		String task = fs.getPath().toString().split("/")[4];
+		if(!replicationTaskToOutputPathMap.containsKey(task)) {
+		LOG.info("ShuffleHandler: task " + task + " is added into replication task set!!");
+		replicationTaskToOutputPathMap.put(task, fs.getPath());
+	  }
+	}  
   }
 }
