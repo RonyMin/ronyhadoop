@@ -22,7 +22,9 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -36,6 +38,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -87,7 +90,12 @@ public class MapTask extends Task {
   private final static int APPROX_HEADER_LENGTH = 150;
 
   private static final Log LOG = LogFactory.getLog(MapTask.class.getName());
-
+  private boolean replicationTask;
+  
+  public boolean isReplicationTask() {
+	  return this.replicationTask;
+  }
+  
   private Progress mapPhase;
   private Progress sortPhase;
   
@@ -105,6 +113,7 @@ public class MapTask extends Task {
                  int numSlotsRequired) {
     super(jobFile, taskId, partition, numSlotsRequired);
     this.splitMetaInfo = splitIndex;
+    this.replicationTask = false;
   }
 
   @Override
@@ -405,6 +414,29 @@ public class MapTask extends Task {
 
     updateJobWithSplit(job, inputSplit);
     reporter.setInputSplit(inputSplit);
+    
+    if(job.get("rony.replication.table") != null) {
+    	
+        String[] replicationTable = job.get("rony.replication.table").split(",");
+        
+    	for(String table : replicationTable){
+    		if(inputSplit.toString().contains(table)) {
+    			
+    			this.replicationTask = true;
+    			FileSystem hdfs = FileSystem.get(conf);
+    			String taskID = getTaskID().toString();
+    			String replicatedDir = new String(conf.get("fs.defaultFS")+"/replication/"+taskID);
+    			LOG.info("Creating dir for this replicated task: " + replicatedDir);
+    			hdfs.mkdirs(new Path(replicatedDir));
+        		break;
+    		}
+    	}
+    	
+		LOG.info("Processing split of Will-Be-Replicated table: " + inputSplit);
+    } else {
+    
+    	LOG.info("Processing split: " + inputSplit);
+    }
 
     RecordReader<INKEY,INVALUE> in = isSkipping() ? 
         new SkippingRecordReader<INKEY,INVALUE>(umbilical, reporter, job) :
@@ -730,7 +762,30 @@ public class MapTask extends Task {
     org.apache.hadoop.mapreduce.InputSplit split = null;
     split = getSplitDetails(new Path(splitIndex.getSplitLocation()),
         splitIndex.getStartOffset());
-    LOG.info("Processing split: " + split);
+
+    if(job.get("rony.replication.table") != null) {
+    	
+        String[] replicationTable = job.get("rony.replication.table").split(",");
+        
+    	for(String table : replicationTable){
+    		if(split.toString().contains(table)) {
+    			
+    			this.replicationTask = true;
+    			FileSystem hdfs = FileSystem.get(conf);
+    			String taskID = getTaskID().toString();
+    			String replicatedDir = new String(conf.get("fs.defaultFS")+"/replication/"+taskID);
+    			LOG.info("Creating dir for this replicated task: " + replicatedDir);
+    			hdfs.mkdirs(new Path(replicatedDir));
+        		break;
+    		}
+    	}
+    	
+		LOG.info("Processing split of Will-Be-Replicated table: " + split);
+    } else {
+    
+    	LOG.info("Processing split: " + split);
+    }
+    
 
     org.apache.hadoop.mapreduce.RecordReader<INKEY,INVALUE> input =
       new NewTrackingRecordReader<INKEY,INVALUE>
@@ -1796,6 +1851,55 @@ public class MapTask extends Task {
           indexCacheList.get(0).writeToFile(
             mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]), job);
         }
+        
+        // If isReplication is true, then here we distribute the final map output file to
+        // every replication manager at each node directly
+        // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
+        if(mapTask.isReplicationTask()) {
+      	  
+      	  LOG.info("Replicating map output data! : Case numSpill == 1");
+  			Configuration hdfsConf = new Configuration();
+  			String taskID;
+  			Path taskOutputFile;
+  			Path taskOutputIndexFile;
+  			File taskOutputFilePath;
+  			File taskOutputIndexFilePath;
+  			FSDataOutputStream fsOutputStream;
+  			InputStream is;
+  			byte[] buffer = new byte[4096];
+  			hdfsConf.set("dfs.replication", "10");
+  			
+  			FileSystem hdfs = FileSystem.get(hdfsConf);
+  			taskID = this.getTaskID().toString();
+  			
+			taskOutputFile = 
+					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
+							+"/file.out");
+			taskOutputIndexFile = 
+					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
+							+"/file.out.index");
+			
+  			taskOutputFilePath = new File(mapOutputFile.getOutputFile().toString());		
+  			fsOutputStream = 
+  					hdfs.create(taskOutputFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
+  			is = new FileInputStream(taskOutputFilePath);
+  			
+  			while(is.read(buffer) != -1) {
+  				fsOutputStream.write(buffer);
+  			}
+  			
+  			LOG.info("Storing map output file " + taskOutputFile.toString() + " is finished!" );
+
+  			taskOutputIndexFilePath = new File(mapOutputFile.getOutputIndexFile().toString());
+  			fsOutputStream = 
+  					hdfs.create(taskOutputIndexFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
+  			is = new FileInputStream(taskOutputIndexFilePath);
+  			
+  			while(is.read(buffer) != -1) {
+  				fsOutputStream.write(buffer);
+  			}
+        }
+        
         sortPhase.complete();
         return;
       }
@@ -1837,6 +1941,60 @@ public class MapTask extends Task {
         } finally {
           finalOut.close();
         }
+        
+        // If isReplication is true, then here we distribute the final map output file to
+        // every replication manager at each node directly
+        // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
+        if(mapTask.isReplicationTask()) {
+      	  
+      	  LOG.info("Replicating map output data! : Case numSpill == 1");
+  			Configuration hdfsConf = new Configuration();
+  			String taskID;
+  			Path taskOutputFile;
+  			Path taskOutputIndexFile;
+  			File taskOutputFilePath;
+  			File taskOutputIndexFilePath;
+  			FSDataOutputStream fsOutputStream;
+  			InputStream is;
+  			byte[] buffer = new byte[4096];
+  			hdfsConf.set("dfs.replication", "10");
+  			
+  			FileSystem hdfs = FileSystem.get(hdfsConf);
+  			taskID = this.getTaskID().toString();
+  			
+			taskOutputFile = 
+					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
+							+"/file.out");
+			taskOutputIndexFile = 
+					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
+							+"/file.out.index");
+			
+  			taskOutputFilePath = new File(mapOutputFile.getOutputFile().toString());		
+  			fsOutputStream = 
+  					hdfs.create(taskOutputFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
+  			is = new FileInputStream(taskOutputFilePath);
+  			
+  			while(is.read(buffer) != -1) {
+  				fsOutputStream.write(buffer);
+  			}
+  			
+  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output file " 
+  			+ taskOutputFile.toString() + " is finished!" );
+
+  			taskOutputIndexFilePath = new File(mapOutputFile.getOutputIndexFile().toString());
+  			fsOutputStream = 
+  					hdfs.create(taskOutputIndexFile, 
+  							(short) Integer.parseInt(hdfsConf.get("dfs.replication")));
+  			is = new FileInputStream(taskOutputIndexFilePath);
+  			
+  			while(is.read(buffer) != -1) {
+  				fsOutputStream.write(buffer);
+  			}
+  			
+  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output index file " 
+  			+ taskOutputIndexFile.toString() + " is finished!" );
+        }
+        
         sortPhase.complete();
         return;
       }
@@ -1891,8 +2049,6 @@ public class MapTask extends Task {
 
           //close
           writer.close();
-
-          sortPhase.startNextPhase();
           
           // record offsets
           rec.startOffset = segmentStart;
@@ -1905,6 +2061,62 @@ public class MapTask extends Task {
         for(int i = 0; i < numSpills; i++) {
           rfs.delete(filename[i],true);
         }
+        
+        // If isReplication is true, then here we distribute the final map output file to
+        // every replication manager at each node directly
+        // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
+        if(mapTask.isReplicationTask()) {
+      	  
+      	  LOG.info("Replicating map output data! : Case numSpill == n");
+  			Configuration hdfsConf = new Configuration();
+  			String taskID;
+  			Path taskOutputFile;
+  			Path taskOutputIndexFile;
+  			File taskOutputFilePath;
+  			File taskOutputIndexFilePath;
+  			FSDataOutputStream fsOutputStream;
+  			InputStream is;
+  			byte[] buffer = new byte[4096];
+  			hdfsConf.set("dfs.replication", "10");
+  			
+  			FileSystem hdfs = FileSystem.get(hdfsConf);
+  			taskID = this.getTaskID().toString();
+  			
+			taskOutputFile = 
+					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
+							+"/file.out");
+			taskOutputIndexFile = 
+					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
+							+"/file.out.index");
+			
+  			taskOutputFilePath = new File(mapOutputFile.getOutputFile().toString());		
+  			fsOutputStream = 
+  					hdfs.create(taskOutputFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
+  			is = new FileInputStream(taskOutputFilePath);
+  			
+  			while(is.read(buffer) != -1) {
+  				fsOutputStream.write(buffer);
+  			}
+  			
+  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output file " 
+  			+ taskOutputFile.toString() + " is finished!" );
+
+  			taskOutputIndexFilePath = new File(mapOutputFile.getOutputIndexFile().toString());
+  			fsOutputStream = 
+  					hdfs.create(taskOutputIndexFile, 
+  							(short) Integer.parseInt(hdfsConf.get("dfs.replication")));
+  			is = new FileInputStream(taskOutputIndexFilePath);
+  			
+  			while(is.read(buffer) != -1) {
+  				fsOutputStream.write(buffer);
+  			}
+  			
+  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output index file " 
+  			+ taskOutputIndexFile.toString() + " is finished!" );
+        }
+
+        sortPhase.startNextPhase();
+        
       }
     }
     
