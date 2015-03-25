@@ -18,7 +18,6 @@
 package org.apache.hadoop.mapreduce.task.reduce;
 
 import java.io.IOException;
-
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -39,6 +38,10 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.mapred.Counters;
 import org.apache.hadoop.mapred.JobConf;
@@ -101,6 +104,10 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
 
   private final boolean reportReadErrorImmediately;
   private long maxDelay = MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY;
+  
+  private Set<String> replicationTask;
+  private String localReplicationStoreBase;
+  private Configuration conf;
 
   public ShuffleSchedulerImpl(JobConf job, TaskStatus status,
                           TaskAttemptID reduceId,
@@ -132,12 +139,33 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
 
     this.maxDelay = job.getLong(MRJobConfig.MAX_SHUFFLE_FETCH_RETRY_DELAY,
         MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY);
+    
+    this.replicationTask = new HashSet<String>();
+    this.localReplicationStoreBase = "/data/replication/";
+    this.conf = new Configuration();
+    conf.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
   }
 
   @Override
   public void resolve(TaskCompletionEvent event) {
     switch (event.getTaskStatus()) {
     case SUCCEEDED:
+      updateReplicationMap();
+      String mapID = event.getTaskAttemptId().toString();
+      Path sourcePath = new Path("/replication/"+mapID+"/file.out");
+      Path targetPath = new Path(this.localReplicationStoreBase+mapID+"/file.out");
+      FileSystem hdfs;
+      try {
+			hdfs = FileSystem.get(conf);
+			LOG.info("Materializing MOF of map task: " + mapID 
+					+ " into local replication store: start");
+		    hdfs.copyToLocalFile(sourcePath, targetPath);
+		    LOG.info("Materializing MOF of map task: " + mapID 
+		    		+ " into local replication store: finish");
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
       URI u = getBaseURI(reduceId, event.getTaskTrackerHttp());
       addKnownMapOutput(u.getHost() + ":" + u.getPort(),
           u.toString(),
@@ -506,5 +534,38 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
     referee.interrupt();
     referee.join();
   }
+  
+  // Rony
+  private FileSystem hdfs;
+  private Path replicationStorePath;
+  private FileStatus[] replicationTaskStatus;
 
+  public void updateReplicationMap() {
+
+	  Configuration job = new Configuration();
+	  job.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
+	  // job.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
+	  
+	  try {
+		this.hdfs = FileSystem.get(job);
+	  } catch (IOException e) {
+		e.printStackTrace();
+	  }
+	  
+	  this.replicationStorePath = new Path(job.get("fs.defaultFS")+"/replication");
+	  LOG.info("ShuffleHandler: Building replication task set...");
+	  try {
+		this.replicationTaskStatus = hdfs.listStatus(replicationStorePath);
+	  } catch (Exception e) {
+		e.printStackTrace();
+	  }
+		
+	  for(FileStatus fs : replicationTaskStatus) {
+		String task = fs.getPath().toString().split("/")[4];
+		if(!replicationTask.contains(task)) {
+		LOG.info("ShuffleHandler: task " + task + " is added into replication task set!!");
+		replicationTask.add(task);
+	  }
+	}  
+  }
 }

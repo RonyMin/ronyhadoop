@@ -35,6 +35,10 @@ import javax.net.ssl.HttpsURLConnection;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.mapred.Counters;
 import org.apache.hadoop.mapred.JobConf;
@@ -89,6 +93,9 @@ class Fetcher<K,V> extends Thread {
 
   private static boolean sslShuffle;
   private static SSLFactory sslFactory;
+  private final Configuration jobConf;
+  
+  private Set<String> replicationTaskSet;
 
   public Fetcher(JobConf job, TaskAttemptID reduceId, 
                  ShuffleSchedulerImpl<K,V> scheduler, MergeManager<K,V> merger,
@@ -112,6 +119,9 @@ class Fetcher<K,V> extends Thread {
     this.id = id;
     this.reduce = reduceId.getTaskID().getId();
     this.shuffleSecretKey = shuffleKey;
+    this.jobConf = job;
+    this.replicationTaskSet = new HashSet<String>();
+    
     ioErrs = reporter.getCounter(SHUFFLE_ERR_GRP_NAME,
         ShuffleErrors.IO_ERROR.toString());
     wrongLengthErrs = reporter.getCounter(SHUFFLE_ERR_GRP_NAME,
@@ -202,6 +212,7 @@ class Fetcher<K,V> extends Thread {
   @VisibleForTesting
   protected synchronized void openConnection(URL url)
       throws IOException {
+	  LOG.info("Fetcher#" + id + ": openConnect with URL: " + url.toString());
     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     if (sslShuffle) {
       HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
@@ -247,10 +258,8 @@ class Fetcher<K,V> extends Thread {
       return;
     }
     
-    if(LOG.isDebugEnabled()) {
-      LOG.debug("Fetcher " + id + " going to fetch from " + host + " for: "
-        + maps);
-    }
+    LOG.info("Fetcher " + id + " going to fetch from [hostname: " + 
+    host.getHostName() + ", baseURL: " + host.getBaseUrl() + " for: " + maps);
     
     // List of maps to be fetched yet
     Set<TaskAttemptID> remaining = new HashSet<TaskAttemptID>(maps);
@@ -383,10 +392,16 @@ class Fetcher<K,V> extends Thread {
       try {
         ShuffleHeader header = new ShuffleHeader();
         header.readFields(input);
+        LOG.info("[fetcher" + id + "] read Header: header.mapId: " + header.mapId);
         mapId = TaskAttemptID.forName(header.mapId);
+        LOG.info("[fetcher" + id + "] mapId: " + mapId);
         compressedLength = header.compressedLength;
         decompressedLength = header.uncompressedLength;
         forReduce = header.forReduce;
+        LOG.info("[fetcher" + id + "] read Header: "
+        		+ "compLength: " + header.compressedLength
+        		+ "decompLength: " + header.uncompressedLength
+        		+ "forReduce: " + header.forReduce);
       } catch (IllegalArgumentException e) {
         badIdErrs.increment(1);
         LOG.warn("Invalid map id ", e);

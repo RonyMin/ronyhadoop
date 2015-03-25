@@ -375,7 +375,9 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
     List<FileStatus> files = listStatus(job);
     for (FileStatus file: files) {
       Path path = file.getPath();
+      System.out.println("input file: " + path.toString());
       long length = file.getLen();
+      System.out.println("length of input file: " + file.getLen());
       if (length != 0) {
         BlockLocation[] blkLocations;
         if (file instanceof LocatedFileStatus) {

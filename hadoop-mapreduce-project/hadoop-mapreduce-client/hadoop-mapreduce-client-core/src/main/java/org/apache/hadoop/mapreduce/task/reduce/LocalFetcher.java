@@ -148,7 +148,8 @@ class LocalFetcher<K,V> extends Fetcher<K, V> {
     try {
       inStream.seek(ir.startOffset);
 
-      mapOutput.shuffle(LOCALHOST, inStream, compressedLength, decompressedLength, metrics, reporter);
+      mapOutput.shuffle(LOCALHOST, inStream, compressedLength, 
+    		  decompressedLength, metrics, reporter);
     } finally {
       try {
         inStream.close();

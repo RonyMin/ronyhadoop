@@ -248,7 +248,7 @@ public class IFileInputStream extends InputStream {
     return csum;
   }
 
-  void disableChecksumValidation() {
+  public void disableChecksumValidation() {
     disableChecksumValidation = true;
   }
 }

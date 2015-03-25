@@ -50,7 +50,7 @@ import org.apache.hadoop.util.Progressable;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
-public class Merger {  
+public class Merger {
   private static final Log LOG = LogFactory.getLog(Merger.class);
 
   // Local directories
@@ -567,7 +567,7 @@ public class Merger {
       int s1 = key1.getPosition();
       int l1 = key1.getLength() - s1;
       int s2 = key2.getPosition();
-      int l2 = key2.getLength() - s2;
+      int l2 = key2.getLength() - s2; 
 
       return comparator.compare(key1.getData(), s1, l1, key2.getData(), s2, l2) < 0;
     }
@@ -675,7 +675,8 @@ public class Merger {
             totalBytesProcessed = 0;
             totalBytes = 0;
             for (int i = 0; i < segmentsToMerge.size(); i++) {
-              totalBytes += segmentsToMerge.get(i).getRawDataLength();
+
+            	totalBytes += segmentsToMerge.get(i).getRawDataLength();
             }
           }
           if (totalBytes != 0) //being paranoid

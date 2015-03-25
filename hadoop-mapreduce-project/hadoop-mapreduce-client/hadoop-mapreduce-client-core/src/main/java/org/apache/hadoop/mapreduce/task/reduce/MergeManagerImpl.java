@@ -614,9 +614,15 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
       long size = data.length;
       totalSize += size;
       fullSize -= size;
+      LOG.info("MergerManagerImpl.createInMemorySegment) InMemoryMapOutput's data buffer size: " 
+              + size + ", totalSize: " 
+    		  + totalSize + ", fullSize: " + fullSize);
       Reader<K,V> reader = new InMemoryReader<K,V>(MergeManagerImpl.this, 
                                                    mo.getMapId(),
                                                    data, 0, (int)size, jobConf);
+      LOG.info("InMemoryReader CTOR) bufferSize: " + ((InMemoryReader<K,V>) reader).getBufferSize()
+              + ", start: " + 0 
+              + ", length: " + size);
       inMemorySegments.add(new Segment<K,V>(reader, true, 
                                             (mo.isPrimaryMapOutput() ? 
                                             mergedMapOutputsCounter : null)));
@@ -667,6 +673,11 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
     LOG.info("finalMerge called with " + 
              inMemoryMapOutputs.size() + " in-memory map-outputs and " + 
              onDiskMapOutputs.size() + " on-disk map-outputs");
+    for(InMemoryMapOutput<K, V> memOutput: inMemoryMapOutputs) {
+    	LOG.info("MergerManagerImpl.finalMerge) memOutput of map task " + memOutput.getMapId() 
+    			+ "'s size: " + memOutput.getSize() +", in-memory buffer size: " 
+    			+ memOutput.getMemory().length);
+    }
     
     final float maxRedPer =
       job.getFloat(MRJobConfig.REDUCE_INPUT_BUFFER_PERCENT, 0f);
@@ -698,6 +709,8 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
       final int numMemDiskSegments = memDiskSegments.size();
       if (numMemDiskSegments > 0 &&
             ioSortFactor > onDiskMapOutputs.size()) {
+    	  
+    	  LOG.info("MergerManagerImpl.finalMerge) numMemDiskSegments > 0 && ioSortFactor > onDiskMapOutputs.size()");
         
         // If we reach here, it implies that we have less than io.sort.factor
         // disk segments and this will be incremented by 1 (result of the 
@@ -712,6 +725,7 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
           mapOutputFile.getInputFileForWrite(mapId,
                                              inMemToDiskBytes).suffix(
                                                  Task.MERGED_OUTPUT_PREFIX);
+  	  LOG.info("MergerManagerImpl.finalMerge) merged output path: " + outputPath.toString());
         final RawKeyValueIterator rIter = Merger.merge(job, fs,
             keyClass, valueClass, memDiskSegments, numMemDiskSegments,
             tmpDir, comparator, reporter, spilledRecordsCounter, null, 

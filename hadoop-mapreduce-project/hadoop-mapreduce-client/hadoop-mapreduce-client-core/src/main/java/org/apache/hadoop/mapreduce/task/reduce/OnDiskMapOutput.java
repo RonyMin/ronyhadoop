@@ -20,22 +20,21 @@ package org.apache.hadoop.mapreduce.task.reduce;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.HashSet;
+import java.util.Set;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-
+import org.apache.hadoop.conf.Configuration;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-
 import org.apache.hadoop.io.IOUtils;
-
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapred.MapOutputFile;
-
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.task.reduce.MergeManagerImpl.CompressAwarePath;
 
@@ -46,11 +45,20 @@ import com.google.common.annotations.VisibleForTesting;
 class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
   private static final Log LOG = LogFactory.getLog(OnDiskMapOutput.class);
   private final FileSystem fs;
-  private final Path tmpOutputPath;
+  private Path tmpOutputPath;
   private final Path outputPath;
   private final MergeManagerImpl<K, V> merger;
   private final OutputStream disk; 
   private long compressedSize;
+  
+  private Set<String> replicationTaskSet;
+  private Configuration job;
+  private String mapId;
+  
+  private Configuration hdfsConf = null;
+  private FileSystem hdfs = null;
+  private Path replicationStorePath;
+  private FileStatus[] replicationTaskStatus = null;
 
   public OnDiskMapOutput(TaskAttemptID mapId, TaskAttemptID reduceId,
                          MergeManagerImpl<K,V> merger, long size,
@@ -76,6 +84,14 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
     this.outputPath = outputPath;
     tmpOutputPath = getTempPath(outputPath, fetcher);
     disk = fs.create(tmpOutputPath);
+    
+    this.hdfsConf = new Configuration();
+    hdfsConf.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
+    this.mapId = getMapId().toString();
+    this.job = new Configuration();
+    this.replicationTaskSet = new HashSet<String>();
+    updateReplicationMap();
+    
   }
 
   @VisibleForTesting
@@ -88,6 +104,9 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
                       long compressedLength, long decompressedLength,
                       ShuffleClientMetrics metrics,
                       Reporter reporter) throws IOException {
+	  
+	if(!replicationTaskSet.contains(mapId)) {
+		
     // Copy data to local-disk
     long bytesLeft = compressedLength;
     try {
@@ -125,6 +144,15 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
                             bytesLeft + " bytes missing of " + 
                             compressedLength + ")");
     }
+	} else {
+		  
+	   Path targetMOFFilePath = new Path("/data/replication/"+getMapId()+"/file.out");
+	   this.tmpOutputPath = targetMOFFilePath;
+	   LOG.info("Read " + compressedLength + 
+	            " bytes from map-output for " + getMapId() + " in local replication store");
+       metrics.inputBytes(compressedLength);
+       reporter.progress();
+	}
     this.compressedSize = compressedLength;
   }
 
@@ -148,6 +176,33 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
   @Override
   public String getDescription() {
     return "DISK";
+  }
+  
+  
+  // Rony
+  public void updateReplicationMap() {
+	  
+	  try {
+		hdfs = FileSystem.get(hdfsConf);
+	  } catch (IOException e) {
+		e.printStackTrace();
+	  }
+	  
+	  replicationStorePath = new Path(hdfsConf.get("fs.defaultFS")+"/replication");
+	  LOG.info("ShuffleHandler: Building replication task set...");
+	  try {
+		replicationTaskStatus = hdfs.listStatus(replicationStorePath);
+	  } catch (Exception e) {
+		e.printStackTrace();
+	  }
+		
+	  for(FileStatus fs : replicationTaskStatus) {
+		String task = fs.getPath().toString().split("/")[4];
+		if(!this.replicationTaskSet.contains(task)) {
+		LOG.info("ShuffleHandler: task " + task + " is added into replication task set!!");
+		this.replicationTaskSet.add(task);
+	  }
+	}  
   }
 
 }

@@ -54,6 +54,10 @@ public class InMemoryReader<K, V> extends Reader<K, V> {
     this.start = start;
     this.length = length;
   }
+  
+  public int getBufferSize() {
+	  return bufferSize;
+  }
 
   @Override
   public void reset(int offset) {

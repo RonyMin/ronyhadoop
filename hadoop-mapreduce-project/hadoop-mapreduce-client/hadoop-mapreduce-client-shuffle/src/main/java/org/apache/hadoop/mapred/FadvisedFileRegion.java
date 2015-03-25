@@ -19,6 +19,7 @@
 package org.apache.hadoop.mapred;
 
 import java.io.FileDescriptor;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
@@ -27,6 +28,7 @@ import java.nio.channels.WritableByteChannel;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.io.ReadaheadPool;
 import org.apache.hadoop.io.ReadaheadPool.ReadaheadRequest;
 import org.apache.hadoop.io.nativeio.NativeIO;
@@ -67,6 +69,25 @@ public class FadvisedFileRegion extends DefaultFileRegion {
     this.shuffleBufferSize = shuffleBufferSize;
     this.shuffleTransferToAllowed = shuffleTransferToAllowed;
   }
+  
+  public FadvisedFileRegion(FileInputStream file, long position, long count,
+	      boolean manageOsCache, int readaheadLength, ReadaheadPool readaheadPool,
+	      String identifier, int shuffleBufferSize, 
+	      boolean shuffleTransferToAllowed) throws IOException {
+	  
+	    super(file.getChannel(), position, count);
+	    
+	    this.manageOsCache = manageOsCache;
+	    this.readaheadLength = readaheadLength;
+	    this.readaheadPool = readaheadPool;
+	    this.fd = file.getFD();
+	    this.identifier = identifier;
+	    this.fileChannel = file.getChannel();
+	    this.count = count;
+	    this.position = position;
+	    this.shuffleBufferSize = shuffleBufferSize;
+	    this.shuffleTransferToAllowed = shuffleTransferToAllowed;
+	  }
 
   @Override
   public long transferTo(WritableByteChannel target, long position)

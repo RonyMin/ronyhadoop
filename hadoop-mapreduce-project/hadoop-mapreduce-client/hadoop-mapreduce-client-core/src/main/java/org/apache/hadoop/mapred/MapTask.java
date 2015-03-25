@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.mapred;
 
+import java.io.BufferedInputStream;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.DataOutputStream;
@@ -47,6 +48,7 @@ import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.io.DataInputBuffer;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
@@ -96,7 +98,26 @@ public class MapTask extends Task {
 	  return this.replicationTask;
   }
   
-  private Progress mapPhase;
+  private long replicationTaskRawLength;
+  private long replicationTaskPartLength;
+  
+  public long getReplicationTaskRawLength() {
+	return replicationTaskRawLength;
+  }
+
+  public void setReplicationTaskRawLength(long replicationTaskRawLength) {
+	this.replicationTaskRawLength = replicationTaskRawLength;
+  }
+
+  public long getReplicationTaskPartLength() {
+	return replicationTaskPartLength;
+  }
+
+  public void setReplicationTaskPartLength(long replicationTaskPartLength) {
+	this.replicationTaskPartLength = replicationTaskPartLength;
+  }
+
+private Progress mapPhase;
   private Progress sortPhase;
   
   {   // set phase for this task
@@ -114,6 +135,8 @@ public class MapTask extends Task {
     super(jobFile, taskId, partition, numSlotsRequired);
     this.splitMetaInfo = splitIndex;
     this.replicationTask = false;
+    this.replicationTaskRawLength = 0;
+    this.replicationTaskPartLength = 0;
   }
 
   @Override
@@ -1615,6 +1638,7 @@ public class MapTask extends Task {
           : (bufvoid - bufend) + bufstart) +
                   partitions * APPROX_HEADER_LENGTH;
       FSDataOutputStream out = null;
+
       try {
         // create spill file
         final SpillRecord spillRec = new SpillRecord(partitions);
@@ -1665,16 +1689,34 @@ public class MapTask extends Task {
                   new MRResultIterator(spstart, spindex);
                 combinerRunner.combine(kvIter, combineCollector);
               }
-            }
-
+            }            
+            
             // close the writer
             writer.close();
-
-            // record offsets
-            rec.startOffset = segmentStart;
-            rec.rawLength = writer.getRawLength();
-            rec.partLength = writer.getCompressedLength();
-            spillRec.putIndex(rec, i);
+            
+            if(i==0) {
+            	mapTask.setReplicationTaskRawLength(writer.getRawLength());
+            	mapTask.setReplicationTaskPartLength(writer.getCompressedLength());
+            }
+            
+            if(!mapTask.isReplicationTask()) {
+            	
+            	// record offsets
+            	rec.startOffset = segmentStart;
+            	rec.rawLength = writer.getRawLength();
+            	rec.partLength = writer.getCompressedLength();
+            	spillRec.putIndex(rec, i);
+            	
+            } else {
+            	
+            	rec.startOffset = 0;
+            	rec.rawLength = mapTask.getReplicationTaskRawLength();
+            	rec.partLength = mapTask.getReplicationTaskPartLength();
+            	LOG.info("Generating pseudo index for partition#" + i + " [startOffset: " 
+            	+ rec.startOffset + ", rawLength: " + rec.rawLength + ", partLength: " 
+            	+ rec.partLength);
+            	spillRec.putIndex(rec, i);
+            }
 
             writer = null;
           } finally {
@@ -1696,7 +1738,7 @@ public class MapTask extends Task {
         LOG.info("Finished spill " + numSpills);
         ++numSpills;
       } finally {
-        if (out != null) out.close();
+        if (out != null) out.close(); 
       }
     }
 
@@ -1841,6 +1883,7 @@ public class MapTask extends Task {
         filename[i] = mapOutputFile.getSpillFile(i);
         finalOutFileSize += rfs.getFileStatus(filename[i]).getLen();
       }
+      
       if (numSpills == 1) { //the spill is the final output
         sameVolRename(filename[0],
             mapOutputFile.getOutputFileForWriteInVolume(filename[0]));
@@ -1851,53 +1894,47 @@ public class MapTask extends Task {
           indexCacheList.get(0).writeToFile(
             mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]), job);
         }
-        
+   
         // If isReplication is true, then here we distribute the final map output file to
         // every replication manager at each node directly
         // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
         if(mapTask.isReplicationTask()) {
       	  
       	  LOG.info("Replicating map output data! : Case numSpill == 1");
-  			Configuration hdfsConf = new Configuration();
-  			String taskID;
-  			Path taskOutputFile;
-  			Path taskOutputIndexFile;
-  			File taskOutputFilePath;
-  			File taskOutputIndexFilePath;
-  			FSDataOutputStream fsOutputStream;
-  			InputStream is;
-  			byte[] buffer = new byte[4096];
-  			hdfsConf.set("dfs.replication", "10");
-  			
-  			FileSystem hdfs = FileSystem.get(hdfsConf);
-  			taskID = this.getTaskID().toString();
-  			
-			taskOutputFile = 
-					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
-							+"/file.out");
-			taskOutputIndexFile = 
-					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
-							+"/file.out.index");
-			
-  			taskOutputFilePath = new File(mapOutputFile.getOutputFile().toString());		
-  			fsOutputStream = 
-  					hdfs.create(taskOutputFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
-  			is = new FileInputStream(taskOutputFilePath);
-  			
-  			while(is.read(buffer) != -1) {
-  				fsOutputStream.write(buffer);
-  			}
-  			
-  			LOG.info("Storing map output file " + taskOutputFile.toString() + " is finished!" );
 
-  			taskOutputIndexFilePath = new File(mapOutputFile.getOutputIndexFile().toString());
-  			fsOutputStream = 
-  					hdfs.create(taskOutputIndexFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
-  			is = new FileInputStream(taskOutputIndexFilePath);
-  			
-  			while(is.read(buffer) != -1) {
-  				fsOutputStream.write(buffer);
-  			}
+			Configuration hdfsConf = new Configuration();
+			String taskID;
+			Path destPath;
+			Path sourcePath;
+			
+			FileSystem hdfs = FileSystem.get(hdfsConf);
+			taskID = this.getTaskID().toString();
+			
+			sourcePath = mapOutputFile.getOutputFile();
+			destPath = new Path("/replication/"+taskID+"/file.out");
+			
+			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
+		  		  	+ sourcePath.toString() 
+		  		  	+ " size: " 
+		  		  	+ FileSystem.getLocal(hdfsConf).getLength(sourcePath) 
+		  		  	+ " : start!" );
+
+		    FSDataOutputStream out = hdfs.create(destPath, (short) 10);
+		    InputStream in = new BufferedInputStream
+		    					(new FileInputStream(
+		    						new File(sourcePath.toString())));
+		    IOUtils.copyBytes(in, out, hdfsConf);
+		    /*
+		    byte[] buffer = new byte[4096];
+		    
+		    while(in.read(buffer) != -1)
+		    	out.write(buffer);
+			*/
+			//hdfs.copyFromLocalFile(mapOutputFile.getOutputFile(), taskOutputFile);
+	
+			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
+		  	+ destPath.toString() + " size: " 
+					+ hdfs.getFileStatus(destPath).getLen() + " : finish!" );
         }
         
         sortPhase.complete();
@@ -1947,52 +1984,41 @@ public class MapTask extends Task {
         // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
         if(mapTask.isReplicationTask()) {
       	  
-      	  LOG.info("Replicating map output data! : Case numSpill == 1");
-  			Configuration hdfsConf = new Configuration();
-  			String taskID;
-  			Path taskOutputFile;
-  			Path taskOutputIndexFile;
-  			File taskOutputFilePath;
-  			File taskOutputIndexFilePath;
-  			FSDataOutputStream fsOutputStream;
-  			InputStream is;
-  			byte[] buffer = new byte[4096];
-  			hdfsConf.set("dfs.replication", "10");
-  			
-  			FileSystem hdfs = FileSystem.get(hdfsConf);
-  			taskID = this.getTaskID().toString();
-  			
-			taskOutputFile = 
-					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
-							+"/file.out");
-			taskOutputIndexFile = 
-					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
-							+"/file.out.index");
-			
-  			taskOutputFilePath = new File(mapOutputFile.getOutputFile().toString());		
-  			fsOutputStream = 
-  					hdfs.create(taskOutputFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
-  			is = new FileInputStream(taskOutputFilePath);
-  			
-  			while(is.read(buffer) != -1) {
-  				fsOutputStream.write(buffer);
-  			}
-  			
-  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output file " 
-  			+ taskOutputFile.toString() + " is finished!" );
+      	  LOG.info("Replicating map output data! : Case numSpill == 0");
 
-  			taskOutputIndexFilePath = new File(mapOutputFile.getOutputIndexFile().toString());
-  			fsOutputStream = 
-  					hdfs.create(taskOutputIndexFile, 
-  							(short) Integer.parseInt(hdfsConf.get("dfs.replication")));
-  			is = new FileInputStream(taskOutputIndexFilePath);
-  			
-  			while(is.read(buffer) != -1) {
-  				fsOutputStream.write(buffer);
-  			}
-  			
-  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output index file " 
-  			+ taskOutputIndexFile.toString() + " is finished!" );
+			Configuration hdfsConf = new Configuration();
+			String taskID;
+			Path destPath;
+			Path sourcePath;
+			
+			FileSystem hdfs = FileSystem.get(hdfsConf);
+			taskID = this.getTaskID().toString();
+			
+			sourcePath = mapOutputFile.getOutputFile();
+			destPath = new Path("/replication/"+taskID+"/file.out");
+			
+			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
+		  		  	+ sourcePath.toString() 
+		  		  	+ " size: " 
+		  		  	+ FileSystem.getLocal(hdfsConf).getLength(sourcePath) 
+		  		  	+ " : start!" );
+
+		    FSDataOutputStream out = hdfs.create(destPath, (short) 10);
+		    InputStream in = new BufferedInputStream
+		    					(new FileInputStream(
+		    						new File(sourcePath.toString())));
+		    IOUtils.copyBytes(in, out, hdfsConf);
+		    /*
+		    byte[] buffer = new byte[4096];
+		    
+		    while(in.read(buffer) != -1)
+		    	out.write(buffer);
+			*/
+			//hdfs.copyFromLocalFile(mapOutputFile.getOutputFile(), taskOutputFile);
+	
+			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
+		  	+ destPath.toString() + " size: " 
+					+ hdfs.getFileStatus(destPath).getLen() + " : finish!" );
         }
         
         sortPhase.complete();
@@ -2003,6 +2029,7 @@ public class MapTask extends Task {
         
         IndexRecord rec = new IndexRecord();
         final SpillRecord spillRec = new SpillRecord(partitions);
+        
         for (int parts = 0; parts < partitions; parts++) {
           //create the segments to be merged
           List<Segment<K,V>> segmentList =
@@ -2068,51 +2095,40 @@ public class MapTask extends Task {
         if(mapTask.isReplicationTask()) {
       	  
       	  LOG.info("Replicating map output data! : Case numSpill == n");
-  			Configuration hdfsConf = new Configuration();
-  			String taskID;
-  			Path taskOutputFile;
-  			Path taskOutputIndexFile;
-  			File taskOutputFilePath;
-  			File taskOutputIndexFilePath;
-  			FSDataOutputStream fsOutputStream;
-  			InputStream is;
-  			byte[] buffer = new byte[4096];
-  			hdfsConf.set("dfs.replication", "10");
-  			
-  			FileSystem hdfs = FileSystem.get(hdfsConf);
-  			taskID = this.getTaskID().toString();
-  			
-			taskOutputFile = 
-					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
-							+"/file.out");
-			taskOutputIndexFile = 
-					new Path(hdfsConf.get("fs.defaultFS")+"/replication/"+taskID
-							+"/file.out.index");
+      	  
+			Configuration hdfsConf = new Configuration();
+			String taskID;
+			Path destPath;
+			Path sourcePath;
 			
-  			taskOutputFilePath = new File(mapOutputFile.getOutputFile().toString());		
-  			fsOutputStream = 
-  					hdfs.create(taskOutputFile, (short) Integer.parseInt(hdfsConf.get("dfs.replication")));
-  			is = new FileInputStream(taskOutputFilePath);
-  			
-  			while(is.read(buffer) != -1) {
-  				fsOutputStream.write(buffer);
-  			}
-  			
-  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output file " 
-  			+ taskOutputFile.toString() + " is finished!" );
+			FileSystem hdfs = FileSystem.get(hdfsConf);
+			taskID = this.getTaskID().toString();
+			
+			sourcePath = mapOutputFile.getOutputFile();
+			destPath = new Path("/replication/"+taskID+"/file.out");
+			
+			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
+		  		  	+ sourcePath.toString() 
+		  		  	+ " size: " 
+		  		  	+ FileSystem.getLocal(hdfsConf).getLength(sourcePath) 
+		  		  	+ " : start!" );
 
-  			taskOutputIndexFilePath = new File(mapOutputFile.getOutputIndexFile().toString());
-  			fsOutputStream = 
-  					hdfs.create(taskOutputIndexFile, 
-  							(short) Integer.parseInt(hdfsConf.get("dfs.replication")));
-  			is = new FileInputStream(taskOutputIndexFilePath);
-  			
-  			while(is.read(buffer) != -1) {
-  				fsOutputStream.write(buffer);
-  			}
-  			
-  			LOG.info("task[" + mapTask.getTaskID().toString() + "]: Storing map output index file " 
-  			+ taskOutputIndexFile.toString() + " is finished!" );
+		    FSDataOutputStream out = hdfs.create(destPath, (short) 10);
+		    InputStream in = new BufferedInputStream
+		    					(new FileInputStream(
+		    						new File(sourcePath.toString())));
+		    IOUtils.copyBytes(in, out, hdfsConf);
+		    /*
+		    byte[] buffer = new byte[4096];
+		    
+		    while(in.read(buffer) != -1)
+		    	out.write(buffer);
+			*/
+			//hdfs.copyFromLocalFile(mapOutputFile.getOutputFile(), taskOutputFile);
+	
+			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
+		  	+ destPath.toString() + " size: " 
+					+ hdfs.getFileStatus(destPath).getLen() + " : finish!" );
         }
 
         sortPhase.startNextPhase();

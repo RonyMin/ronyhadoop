@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -205,9 +206,7 @@ public class ShuffleHandler extends AuxiliaryService {
   int connectionKeepAliveTimeOut;
   int mapOutputMetaInfoCacheSize;
   
-  //Rony
-  public static Map<String, Path> replicationTaskToOutputPathMap = 
-		  new HashMap<String, Path>();
+  public static Set<String> replicationTask = new HashSet<String>();
 
   @Metrics(about="Shuffle output metrics", context="mapred")
   static class ShuffleMetrics implements ChannelFutureListener {
@@ -502,10 +501,9 @@ public class ShuffleHandler extends AuxiliaryService {
     @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent evt)
         throws Exception {
-    	
-      updateReplicationMap();
       
       HttpRequest request = (HttpRequest) evt.getMessage();
+      
       if (request.getMethod() != GET) {
           sendError(ctx, METHOD_NOT_ALLOWED);
           return;
@@ -519,6 +517,15 @@ public class ShuffleHandler extends AuxiliaryService {
       }
       final Map<String,List<String>> q =
         new QueryStringDecoder(request.getUri()).getParameters();
+	  StringBuilder sb = new StringBuilder();
+	  sb.append("[Decoded messages] ");
+	  Iterator<String> iterQ = q.keySet().iterator();
+	  while(iterQ.hasNext()) {
+		  String key = iterQ.next();
+		  sb.append(key +": " + q.get(key) + ", ");
+	  }
+	  LOG.info("Received message! " + sb.toString());
+	  
       final List<String> keepAliveList = q.get("keepAlive");
       boolean keepAliveParam = false;
       if (keepAliveList != null && keepAliveList.size() == 1) {
@@ -596,25 +603,31 @@ public class ShuffleHandler extends AuxiliaryService {
       ch.write(response);
       // TODO refactor the following into the pipeline
       ChannelFuture lastMap = null;
-      for (String mapId : mapIds) {
-    		  try {
-    			  MapOutputInfo info = mapOutputInfoMap.get(mapId);
-    			  
-    			  if (info == null) {
-    				  info = getMapOutputInfo(outputBasePathStr, mapId, reduceId, user);
-    			  }
-    			  
-    			  lastMap = sendMapOutput(ctx, ch, user, mapId,reduceId, info);
-    			  if (null == lastMap) {
-    				  sendError(ctx, NOT_FOUND);
-    				  return;
-    			  }
-    		  	} catch (IOException e) {
-    		  		LOG.error("Shuffle error :", e);
-    		  		String errorMessage = getErrorMessage(e);
-    		  		sendError(ctx,errorMessage , INTERNAL_SERVER_ERROR);
-    		  		return;
-    		  	}
+      for (String mapId : mapIds) {	  
+    	  try {
+    		MapOutputInfo info = mapOutputInfoMap.get(mapId);
+    		  
+    		if (info == null) {
+    		 info = getMapOutputInfo(outputBasePathStr, mapId, reduceId, user);
+    		}
+    	  
+    		if(replicationTask.contains(mapId)) {
+    			String localReplicationStore = "/data/replication/";
+    			Path targetPath = new Path(localReplicationStore+mapId+"/file.out");
+    			info.setMapOutputFileName(targetPath);
+    		}
+    		
+    		lastMap = sendMapOutput(ctx, ch, user, mapId,reduceId, info);
+    		  if (null == lastMap) {
+    			  sendError(ctx, NOT_FOUND);
+    			  return;
+    		  }
+    		} catch (IOException e) {
+    			LOG.error("Shuffle error :", e);
+    			String errorMessage = getErrorMessage(e);
+    			sendError(ctx,errorMessage , INTERNAL_SERVER_ERROR);
+    			return;
+    		}
       }
       lastMap.addListener(metrics);
       lastMap.addListener(ChannelFutureListener.CLOSE);
@@ -644,19 +657,16 @@ public class ShuffleHandler extends AuxiliaryService {
     protected MapOutputInfo getMapOutputInfo(String base, String mapId,
         int reduce, String user) throws IOException {
     	
-    	MapOutputInfo outputInfo = null;
     	Path mapOutputFileName = null;
-    	Path indexFileName = null;
-    	IndexRecord info = null;
     	String replicationBase = "/replication/" + mapId;
   		
-    	if(!replicationTaskToOutputPathMap.containsKey(mapId)) {
-    		// Index file
-    		indexFileName =
-    				lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
-    		info =
-    				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
-
+    	// Index file
+		Path indexFileName =
+				lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
+		IndexRecord info =
+				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
+    	
+    	if(!replicationTask.contains(mapId)) {
     		mapOutputFileName =
     				lDirAlloc.getLocalPathToRead(base + "/file.out", conf);
     	} else {
@@ -664,15 +674,14 @@ public class ShuffleHandler extends AuxiliaryService {
     		// We cannot use LocalDirAllocator!
     		// Instead, we use a path of MOF and its index in HDFS directly
     		// To get its inputstream to read.
-    		indexFileName = new Path(base + "/file.out.index");
-    		info =
-    				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
     		mapOutputFileName =
     				new Path(replicationBase + "/file.out");
     	}
+    	
 		LOG.info("(Rony shuffleHandler.getMapOutputInfo) " 
     	+ base + " : " + mapOutputFileName + " : " + indexFileName);
-    	outputInfo = new MapOutputInfo(mapOutputFileName, info);
+		
+		MapOutputInfo outputInfo = new MapOutputInfo(mapOutputFileName, info);
     	return outputInfo;
     }
 
@@ -726,12 +735,16 @@ public class ShuffleHandler extends AuxiliaryService {
     }
 
     class MapOutputInfo {
-      final Path mapOutputFileName;
+      private Path mapOutputFileName;
       final IndexRecord indexRecord;
 
       MapOutputInfo(Path mapOutputFileName, IndexRecord indexRecord) {
         this.mapOutputFileName = mapOutputFileName;
         this.indexRecord = indexRecord;
+      }
+      
+      public void setMapOutputFileName(Path path) {
+    	  this.mapOutputFileName = path;
       }
     }
 
@@ -779,50 +792,50 @@ public class ShuffleHandler extends AuxiliaryService {
     protected ChannelFuture sendMapOutput(ChannelHandlerContext ctx, Channel ch,
         String user, String mapId, int reduce, MapOutputInfo mapOutputInfo)
         throws IOException {
-      final IndexRecord info = mapOutputInfo.indexRecord;
-      final ShuffleHeader header =
-        new ShuffleHeader(mapId, info.partLength, info.rawLength, reduce);
-      final DataOutputBuffer dob = new DataOutputBuffer();
-      header.write(dob);
-      ch.write(wrappedBuffer(dob.getData(), 0, dob.getLength()));
-      final File spillfile =
-          new File(mapOutputInfo.mapOutputFileName.toString());
-      RandomAccessFile spill;
-      try {
-        spill = SecureIOUtils.openForRandomRead(spillfile, "r", user, null);
-      } catch (FileNotFoundException e) {
-        LOG.info(spillfile + " not found");
-        return null;
-      }
-      ChannelFuture writeFuture;
-      if (ch.getPipeline().get(SslHandler.class) == null) {
-        final FadvisedFileRegion partition = new FadvisedFileRegion(spill,
-            info.startOffset, info.partLength, manageOsCache, readaheadLength,
-            readaheadPool, spillfile.getAbsolutePath(), 
-            shuffleBufferSize, shuffleTransferToAllowed);
-        writeFuture = ch.write(partition);
-        writeFuture.addListener(new ChannelFutureListener() {
-            // TODO error handling; distinguish IO/connection failures,
-            //      attribute to appropriate spill output
-          @Override
-          public void operationComplete(ChannelFuture future) {
-            if (future.isSuccess()) {
-              partition.transferSuccessful();
+        final IndexRecord info = mapOutputInfo.indexRecord;
+        final ShuffleHeader header =
+          new ShuffleHeader(mapId, info.partLength, info.rawLength, reduce);
+        final DataOutputBuffer dob = new DataOutputBuffer();
+        header.write(dob);
+        ch.write(wrappedBuffer(dob.getData(), 0, dob.getLength()));
+        final File spillfile =
+            new File(mapOutputInfo.mapOutputFileName.toString());
+        RandomAccessFile spill;
+        try {
+          spill = SecureIOUtils.openForRandomRead(spillfile, "r", user, null);
+        } catch (FileNotFoundException e) {
+          LOG.info(spillfile + " not found");
+          return null;
+        }
+        ChannelFuture writeFuture;
+        if (ch.getPipeline().get(SslHandler.class) == null) {
+          final FadvisedFileRegion partition = new FadvisedFileRegion(spill,
+              info.startOffset, info.partLength, manageOsCache, readaheadLength,
+              readaheadPool, spillfile.getAbsolutePath(), 
+              shuffleBufferSize, shuffleTransferToAllowed);
+          writeFuture = ch.write(partition);
+          writeFuture.addListener(new ChannelFutureListener() {
+              // TODO error handling; distinguish IO/connection failures,
+              //      attribute to appropriate spill output
+            @Override
+            public void operationComplete(ChannelFuture future) {
+              if (future.isSuccess()) {
+                partition.transferSuccessful();
+              }
+              partition.releaseExternalResources();
             }
-            partition.releaseExternalResources();
-          }
-        });
-      } else {
-        // HTTPS cannot be done with zero copy.
-        final FadvisedChunkedFile chunk = new FadvisedChunkedFile(spill,
-            info.startOffset, info.partLength, sslFileBufferSize,
-            manageOsCache, readaheadLength, readaheadPool,
-            spillfile.getAbsolutePath());
-        writeFuture = ch.write(chunk);
-      }
-      metrics.shuffleConnections.incr();
-      metrics.shuffleOutputBytes.incr(info.partLength); // optimistic
-      return writeFuture;
+          });
+        } else {
+          // HTTPS cannot be done with zero copy.
+          final FadvisedChunkedFile chunk = new FadvisedChunkedFile(spill,
+              info.startOffset, info.partLength, sslFileBufferSize,
+              manageOsCache, readaheadLength, readaheadPool,
+              spillfile.getAbsolutePath());
+          writeFuture = ch.write(chunk);
+        }
+        metrics.shuffleConnections.incr();
+        metrics.shuffleOutputBytes.incr(info.partLength); // optimistic
+        return writeFuture;
     }
 
     protected void sendError(ChannelHandlerContext ctx,
@@ -874,11 +887,11 @@ public class ShuffleHandler extends AuxiliaryService {
     }
   }
   
+  // Rony
   private FileSystem hdfs;
   private Path replicationStorePath;
   private FileStatus[] replicationTaskStatus;
-  
-  // Rony
+
   public void updateReplicationMap() {
 
 	  Configuration job = new Configuration();
@@ -901,9 +914,9 @@ public class ShuffleHandler extends AuxiliaryService {
 		
 	  for(FileStatus fs : replicationTaskStatus) {
 		String task = fs.getPath().toString().split("/")[4];
-		if(!replicationTaskToOutputPathMap.containsKey(task)) {
+		if(!replicationTask.contains(task)) {
 		LOG.info("ShuffleHandler: task " + task + " is added into replication task set!!");
-		replicationTaskToOutputPathMap.put(task, fs.getPath());
+		replicationTask.add(task);
 	  }
 	}  
   }

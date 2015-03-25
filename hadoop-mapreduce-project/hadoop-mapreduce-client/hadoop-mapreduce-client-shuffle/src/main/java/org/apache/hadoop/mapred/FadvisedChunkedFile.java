@@ -19,6 +19,7 @@
 package org.apache.hadoop.mapred;
 
 import java.io.FileDescriptor;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 
