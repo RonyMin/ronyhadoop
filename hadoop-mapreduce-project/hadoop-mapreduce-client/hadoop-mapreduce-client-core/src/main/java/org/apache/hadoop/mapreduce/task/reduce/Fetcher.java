@@ -96,6 +96,7 @@ class Fetcher<K,V> extends Thread {
   private final Configuration jobConf;
   
   private Set<String> replicationTaskSet;
+  private int count;
 
   public Fetcher(JobConf job, TaskAttemptID reduceId, 
                  ShuffleSchedulerImpl<K,V> scheduler, MergeManager<K,V> merger,
@@ -121,6 +122,7 @@ class Fetcher<K,V> extends Thread {
     this.shuffleSecretKey = shuffleKey;
     this.jobConf = job;
     this.replicationTaskSet = new HashSet<String>();
+    this.count = 1;
     
     ioErrs = reporter.getCounter(SHUFFLE_ERR_GRP_NAME,
         ShuffleErrors.IO_ERROR.toString());
@@ -259,7 +261,7 @@ class Fetcher<K,V> extends Thread {
     }
     
     LOG.info("Fetcher " + id + " going to fetch from [hostname: " + 
-    host.getHostName() + ", baseURL: " + host.getBaseUrl() + " for: " + maps);
+    host.getHostName() + " for: " + maps);
     
     // List of maps to be fetched yet
     Set<TaskAttemptID> remaining = new HashSet<TaskAttemptID>(maps);
@@ -390,15 +392,16 @@ class Fetcher<K,V> extends Thread {
       int forReduce = -1;
       //Read the shuffle header
       try {
+    	LOG.info("[fetcher" + id + "] copyMapOutput call count: " + count);
+    	count++;
         ShuffleHeader header = new ShuffleHeader();
         header.readFields(input);
-        LOG.info("[fetcher" + id + "] read Header: header.mapId: " + header.mapId);
+        LOG.info("[fetcher" + id + "] mapId: " + header.mapId);
         mapId = TaskAttemptID.forName(header.mapId);
-        LOG.info("[fetcher" + id + "] mapId: " + mapId);
         compressedLength = header.compressedLength;
         decompressedLength = header.uncompressedLength;
         forReduce = header.forReduce;
-        LOG.info("[fetcher" + id + "] read Header: "
+        LOG.info("[fetcher" + id + "] decoded header --> "
         		+ "compLength: " + header.compressedLength
         		+ "decompLength: " + header.uncompressedLength
         		+ "forReduce: " + header.forReduce);
@@ -449,9 +452,21 @@ class Fetcher<K,V> extends Thread {
         mapOutput.shuffle(host, input, compressedLength, decompressedLength,
             metrics, reporter);
       } catch (java.lang.InternalError e) {
-        LOG.warn("Failed to shuffle for fetcher#"+id, e);
-        throw new IOException(e);
+		  LOG.warn("Failed to shuffle MOF of task " + mapId + " for fetcher#"+id, e);
+		  throw new IOException(e);
       }
+        /*
+      } catch (java.lang.InternalError e) {
+    	  updateReplicationTasks();
+    	  if(!this.replicationTaskSet.contains(mapId.toString())) {
+    		  LOG.warn("Failed to shuffle MOF of task " + mapId + " for fetcher#"+id, e);
+    		  throw new IOException(e);
+    	  } else {
+    		  LOG.info("Trying to assign different completed map task!");
+    	      return new TaskAttemptID[] {mapId};
+    	  }
+      }
+      */
       
       // Inform the shuffle scheduler
       long endTime = System.currentTimeMillis();
@@ -586,5 +601,36 @@ class Fetcher<K,V> extends Thread {
         }
       }
     }
+  }
+  
+  // Rony
+  public void updateReplicationTasks() {
+	  
+	  FileSystem hdfs = null;
+	  Path replicationStorePath;
+	  FileStatus[] replicationTaskStatus = null;
+	  
+	  try {
+		  hdfs = FileSystem.get(jobConf);
+	  } catch (IOException e) {
+		e.printStackTrace();
+	  }
+	  
+	  replicationStorePath = new Path("/replication");
+	  LOG.info("Fetcher: updateReplicationTasks...");
+	  try {
+		replicationTaskStatus = hdfs.listStatus(replicationStorePath);
+	  } catch (Exception e) {
+		e.printStackTrace();
+	  }
+	
+	  if(replicationTaskStatus != null) {
+		  for(FileStatus fs : replicationTaskStatus) {
+			  String task = fs.getPath().toString().split("/")[4];
+			  if(!this.replicationTaskSet.contains(task)) {
+				  this.replicationTaskSet.add(task);
+			  }
+		  }
+	  }
   }
 }

@@ -39,9 +39,6 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.mapred.Counters;
 import org.apache.hadoop.mapred.JobConf;
@@ -105,10 +102,12 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
   private final boolean reportReadErrorImmediately;
   private long maxDelay = MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY;
   
-  private Set<String> replicationTask;
-  private String localReplicationStoreBase;
+  // Rony. For caching TaskAttempID --> MapOutput
+  private HashMap<String, MapOutput> InMemoryReplicationStore;
+  
   private Configuration conf;
 
+  // Per reduce shuffle scheduler! (NOT per node.. e.g., shuffle handler)
   public ShuffleSchedulerImpl(JobConf job, TaskStatus status,
                           TaskAttemptID reduceId,
                           ExceptionReporter reporter,
@@ -139,33 +138,20 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
 
     this.maxDelay = job.getLong(MRJobConfig.MAX_SHUFFLE_FETCH_RETRY_DELAY,
         MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY);
+    this.InMemoryReplicationStore = new HashMap<String, MapOutput>();
     
-    this.replicationTask = new HashSet<String>();
-    this.localReplicationStoreBase = "/data/replication/";
     this.conf = new Configuration();
-    conf.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
+    if(job.get("rony.network").equals("1G"))
+    	conf.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
+    else
+    	conf.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
+
   }
 
   @Override
   public void resolve(TaskCompletionEvent event) {
     switch (event.getTaskStatus()) {
     case SUCCEEDED:
-      updateReplicationMap();
-      String mapID = event.getTaskAttemptId().toString();
-      Path sourcePath = new Path("/replication/"+mapID+"/file.out");
-      Path targetPath = new Path(this.localReplicationStoreBase+mapID+"/file.out");
-      FileSystem hdfs;
-      try {
-			hdfs = FileSystem.get(conf);
-			LOG.info("Materializing MOF of map task: " + mapID 
-					+ " into local replication store: start");
-		    hdfs.copyToLocalFile(sourcePath, targetPath);
-		    LOG.info("Materializing MOF of map task: " + mapID 
-		    		+ " into local replication store: finish");
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
       URI u = getBaseURI(reduceId, event.getTaskTrackerHttp());
       addKnownMapOutput(u.getHost() + ":" + u.getPort(),
           u.toString(),
@@ -213,6 +199,8 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
 
     if (!finishedMaps[mapIndex]) {
       output.commit();
+      MapOutput<K,V> replicatedOutput;
+      this.InMemoryReplicationStore.put(mapId.toString(), output);
       finishedMaps[mapIndex] = true;
       shuffledMapsCounter.increment(1);
       if (--remainingMaps == 0) {
@@ -419,6 +407,16 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
     List<TaskAttemptID> result = new ArrayList<TaskAttemptID>();
     int includedMaps = 0;
     int totalSize = list.size();
+    
+    // Rony change! : get only one map per one connection
+    // to resolve the bug!!
+    if(itr.hasNext()) {
+    	TaskAttemptID id = itr.next();
+    	if (!obsoleteMaps.contains(id) && !finishedMaps[id.getTaskID().getId()]) {
+    		result.add(id);
+    	}
+    }
+    /*
     // find the maps that we still need, up to the limit
     while (itr.hasNext()) {
       TaskAttemptID id = itr.next();
@@ -429,6 +427,7 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
         }
       }
     }
+    */
     // put back the maps left after the limit
     while (itr.hasNext()) {
       TaskAttemptID id = itr.next();
@@ -533,39 +532,5 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
   public void close() throws InterruptedException {
     referee.interrupt();
     referee.join();
-  }
-  
-  // Rony
-  private FileSystem hdfs;
-  private Path replicationStorePath;
-  private FileStatus[] replicationTaskStatus;
-
-  public void updateReplicationMap() {
-
-	  Configuration job = new Configuration();
-	  job.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
-	  // job.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
-	  
-	  try {
-		this.hdfs = FileSystem.get(job);
-	  } catch (IOException e) {
-		e.printStackTrace();
-	  }
-	  
-	  this.replicationStorePath = new Path(job.get("fs.defaultFS")+"/replication");
-	  LOG.info("ShuffleHandler: Building replication task set...");
-	  try {
-		this.replicationTaskStatus = hdfs.listStatus(replicationStorePath);
-	  } catch (Exception e) {
-		e.printStackTrace();
-	  }
-		
-	  for(FileStatus fs : replicationTaskStatus) {
-		String task = fs.getPath().toString().split("/")[4];
-		if(!replicationTask.contains(task)) {
-		LOG.info("ShuffleHandler: task " + task + " is added into replication task set!!");
-		replicationTask.add(task);
-	  }
-	}  
   }
 }

@@ -42,7 +42,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -207,6 +206,7 @@ public class ShuffleHandler extends AuxiliaryService {
   int mapOutputMetaInfoCacheSize;
   
   public static Set<String> replicationTask = new HashSet<String>();
+  public static Configuration jobConf;
 
   @Metrics(about="Shuffle output metrics", context="mapred")
   static class ShuffleMetrics implements ChannelFutureListener {
@@ -466,6 +466,7 @@ public class ShuffleHandler extends AuxiliaryService {
       this.conf = conf;
       indexCache = new IndexCache(new JobConf(conf));
       this.port = conf.getInt(SHUFFLE_PORT_CONFIG_KEY, DEFAULT_SHUFFLE_PORT);
+      jobConf = conf;
     }
     
     public void setPort(int port) {
@@ -501,7 +502,13 @@ public class ShuffleHandler extends AuxiliaryService {
     @Override
     public void messageReceived(ChannelHandlerContext ctx, MessageEvent evt)
         throws Exception {
-      
+    	
+      // As a global view, each shuffle handler should know the entire
+      // list of replication tasks of each job
+      // If given message contains the request of replication MOF?
+      // 	a) check the local replication store and set path of MOF as the path in local replication store
+      // 	b) or, set a path of MOF as usual for non-replication task
+      updateReplicationMap();
       HttpRequest request = (HttpRequest) evt.getMessage();
       
       if (request.getMethod() != GET) {
@@ -517,14 +524,6 @@ public class ShuffleHandler extends AuxiliaryService {
       }
       final Map<String,List<String>> q =
         new QueryStringDecoder(request.getUri()).getParameters();
-	  StringBuilder sb = new StringBuilder();
-	  sb.append("[Decoded messages] ");
-	  Iterator<String> iterQ = q.keySet().iterator();
-	  while(iterQ.hasNext()) {
-		  String key = iterQ.next();
-		  sb.append(key +": " + q.get(key) + ", ");
-	  }
-	  LOG.info("Received message! " + sb.toString());
 	  
       final List<String> keepAliveList = q.get("keepAlive");
       boolean keepAliveParam = false;
@@ -658,7 +657,7 @@ public class ShuffleHandler extends AuxiliaryService {
         int reduce, String user) throws IOException {
     	
     	Path mapOutputFileName = null;
-    	String replicationBase = "/replication/" + mapId;
+    	String replicationBase = "/data/replication/" + mapId;
   		
     	// Index file
 		Path indexFileName =
@@ -669,6 +668,8 @@ public class ShuffleHandler extends AuxiliaryService {
     	if(!replicationTask.contains(mapId)) {
     		mapOutputFileName =
     				lDirAlloc.getLocalPathToRead(base + "/file.out", conf);
+    		LOG.info("(Rony shuffleHandler.getMapOutputInfo) set normal case MOF: " 
+    	        	+ mapOutputFileName + ", index : " + indexFileName);
     	} else {
     		// Since replicated MOF and its index are exist in HDFS,
     		// We cannot use LocalDirAllocator!
@@ -676,11 +677,11 @@ public class ShuffleHandler extends AuxiliaryService {
     		// To get its inputstream to read.
     		mapOutputFileName =
     				new Path(replicationBase + "/file.out");
+        	
+    		LOG.info("(Rony shuffleHandler.getMapOutputInfo) set replication base MOF: " 
+        	+ mapOutputFileName + ", index : " + indexFileName);
     	}
-    	
-		LOG.info("(Rony shuffleHandler.getMapOutputInfo) " 
-    	+ base + " : " + mapOutputFileName + " : " + indexFileName);
-		
+
 		MapOutputInfo outputInfo = new MapOutputInfo(mapOutputFileName, info);
     	return outputInfo;
     }
@@ -793,6 +794,8 @@ public class ShuffleHandler extends AuxiliaryService {
         String user, String mapId, int reduce, MapOutputInfo mapOutputInfo)
         throws IOException {
         final IndexRecord info = mapOutputInfo.indexRecord;
+        LOG.info("ShuffleHandler.sendMapOutput--> mapId:" + mapId +", info.partLength: "
+        	+ info.partLength +", info.rawLength: " + info.rawLength +", reduce: " + reduce);
         final ShuffleHeader header =
           new ShuffleHeader(mapId, info.partLength, info.rawLength, reduce);
         final DataOutputBuffer dob = new DataOutputBuffer();
@@ -803,9 +806,17 @@ public class ShuffleHandler extends AuxiliaryService {
         RandomAccessFile spill;
         try {
           spill = SecureIOUtils.openForRandomRead(spillfile, "r", user, null);
+
         } catch (FileNotFoundException e) {
-          LOG.info(spillfile + " not found");
-          return null;
+        	if(!mapOutputInfo.mapOutputFileName.toString().contains("replication")) {
+          		LOG.info(spillfile + " not found");
+          		return null;
+    		} else {
+    			LOG.info(spillfile + " does not exist right now but will be materialized...");
+    			LOG.info("Instead of making spill = null, we touch that file with size 0.");
+    			org.apache.commons.io.FileUtils.touch(spillfile);
+    	        spill = SecureIOUtils.openForRandomRead(spillfile, "r", user, null);
+    		}
         }
         ChannelFuture writeFuture;
         if (ch.getPipeline().get(SslHandler.class) == null) {
@@ -888,26 +899,21 @@ public class ShuffleHandler extends AuxiliaryService {
   }
   
   // Rony
-  private FileSystem hdfs;
-  private Path replicationStorePath;
+  private FileSystem fs;
+  private Path replicationBoard;
   private FileStatus[] replicationTaskStatus;
 
-  public void updateReplicationMap() {
+  public void updateReplicationMap() throws IOException {
 
-	  Configuration job = new Configuration();
-	  job.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
-	  // job.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
+	  // Shuffle.getMapOutputInfo uses a set of replication map task
+	  // in HDFS's replication board
+	  // to change the MapOutputInfo's path of MOF
+	  FileSystem hdfs = FileSystem.get(jobConf);
 	  
-	  try {
-		this.hdfs = FileSystem.get(job);
-	  } catch (IOException e) {
-		e.printStackTrace();
-	  }
-	  
-	  this.replicationStorePath = new Path(job.get("fs.defaultFS")+"/replication");
+	  this.replicationBoard = new Path("/replication");
 	  LOG.info("ShuffleHandler: Building replication task set...");
 	  try {
-		this.replicationTaskStatus = hdfs.listStatus(replicationStorePath);
+		this.replicationTaskStatus = hdfs.listStatus(replicationBoard);
 	  } catch (Exception e) {
 		e.printStackTrace();
 	  }

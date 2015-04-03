@@ -18,14 +18,11 @@
 
 package org.apache.hadoop.mapred;
 
-import java.io.BufferedInputStream;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -35,11 +32,11 @@ import java.util.List;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.apache.commons.el.OrOperator;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -48,7 +45,6 @@ import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.io.DataInputBuffer;
-import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
@@ -446,9 +442,10 @@ private Progress mapPhase;
     		if(inputSplit.toString().contains(table)) {
     			
     			this.replicationTask = true;
+    			super.setReplicationTask(true);
     			FileSystem hdfs = FileSystem.get(conf);
     			String taskID = getTaskID().toString();
-    			String replicatedDir = new String(conf.get("fs.defaultFS")+"/replication/"+taskID);
+    			String replicatedDir = new String("/replication/"+taskID);
     			LOG.info("Creating dir for this replicated task: " + replicatedDir);
     			hdfs.mkdirs(new Path(replicatedDir));
         		break;
@@ -796,7 +793,7 @@ private Progress mapPhase;
     			this.replicationTask = true;
     			FileSystem hdfs = FileSystem.get(conf);
     			String taskID = getTaskID().toString();
-    			String replicatedDir = new String(conf.get("fs.defaultFS")+"/replication/"+taskID);
+    			String replicatedDir = new String("/replication/"+taskID);
     			LOG.info("Creating dir for this replicated task: " + replicatedDir);
     			hdfs.mkdirs(new Path(replicatedDir));
         		break;
@@ -1560,7 +1557,11 @@ private Progress mapPhase;
       // release sort buffer before the merge
       kvbuffer = null;
       mergeParts();
-      Path outputPath = mapOutputFile.getOutputFile();
+      Path outputPath;
+      if(!mapTask.isReplicationTask())
+    	  outputPath = mapOutputFile.getOutputFile();
+      else
+    	  outputPath = new Path("/data/replication/"+this.mapTask.getTaskID().toString()+"/file.out");
       fileOutputByteCounter.increment(rfs.getFileStatus(outputPath).getLen());
     }
 
@@ -1706,6 +1707,9 @@ private Progress mapPhase;
             	rec.rawLength = writer.getRawLength();
             	rec.partLength = writer.getCompressedLength();
             	spillRec.putIndex(rec, i);
+            	LOG.info("Generating index for partition#" + i + " [startOffset: " 
+            	+ rec.startOffset + ", rawLength: " + rec.rawLength + ", partLength: " 
+            	+ rec.partLength);
             	
             } else {
             	
@@ -1872,7 +1876,8 @@ private Progress mapPhase;
     }
 
     private void mergeParts() throws IOException, InterruptedException, 
-                                     ClassNotFoundException {
+                                     ClassNotFoundException {    	
+    	
       // get the approximate size of the final output/index files
       long finalOutFileSize = 0;
       long finalIndexFileSize = 0;
@@ -1884,9 +1889,35 @@ private Progress mapPhase;
         finalOutFileSize += rfs.getFileStatus(filename[i]).getLen();
       }
       
+      
+      // If isReplication is true, then here we materialize the MOF to
+      // its local replication store first.
+      // In this case, we just rename the spilled MOF to path in the local replication store.
+      // Then, if reduce task which is launched at remote site requires this file,
+      // we pass the output stream of MOF to that reduce task
+      // to materialize replication data only once.
+      // If other reduce tasks that are launched at the same remote site
+      // Then they just need to read that materialized MOF.
+      
       if (numSpills == 1) { //the spill is the final output
-        sameVolRename(filename[0],
-            mapOutputFile.getOutputFileForWriteInVolume(filename[0]));
+    	  if(!mapTask.isReplicationTask()) {
+    		  Path originalPath = filename[0];
+    		  sameVolRename(filename[0],
+    				  mapOutputFile.getOutputFileForWriteInVolume(filename[0]));
+    		  Path currentPath = mapOutputFile.getOutputFile();
+    		  LOG.info("Spilled file " + originalPath.toString() + " is moved to temp path :" 
+    				  + currentPath.toString() + ", size :" + rfs.getLength(currentPath));
+    			LOG.info("size of spilled file : " + rfs.getLength(currentPath));
+    	  } else {
+    		  String taskID = mapId.toString();
+    		  Path targetMOFPath = new Path("/data/replication/"+taskID+"/file.out");
+    		  rfs.moveToLocalFile(filename[0], targetMOFPath);
+    		  LOG.info("spilled file " + filename[0] + " is moved to local replication store: " + targetMOFPath);
+    		  FileSystem hdfs = FileSystem.get(job);
+    		  long MOFSize = rfs.getLength(targetMOFPath);
+  			  LOG.info("size of spilled file : " + MOFSize);
+    		  hdfs.createNewFile(new Path("/replication/"+mapId+"/"+MOFSize));
+    	  }
         if (indexCacheList.size() == 0) {
           sameVolRename(mapOutputFile.getSpillIndexFile(0),
             mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]));
@@ -1894,49 +1925,6 @@ private Progress mapPhase;
           indexCacheList.get(0).writeToFile(
             mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]), job);
         }
-   
-        // If isReplication is true, then here we distribute the final map output file to
-        // every replication manager at each node directly
-        // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
-        if(mapTask.isReplicationTask()) {
-      	  
-      	  LOG.info("Replicating map output data! : Case numSpill == 1");
-
-			Configuration hdfsConf = new Configuration();
-			String taskID;
-			Path destPath;
-			Path sourcePath;
-			
-			FileSystem hdfs = FileSystem.get(hdfsConf);
-			taskID = this.getTaskID().toString();
-			
-			sourcePath = mapOutputFile.getOutputFile();
-			destPath = new Path("/replication/"+taskID+"/file.out");
-			
-			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
-		  		  	+ sourcePath.toString() 
-		  		  	+ " size: " 
-		  		  	+ FileSystem.getLocal(hdfsConf).getLength(sourcePath) 
-		  		  	+ " : start!" );
-
-		    FSDataOutputStream out = hdfs.create(destPath, (short) 10);
-		    InputStream in = new BufferedInputStream
-		    					(new FileInputStream(
-		    						new File(sourcePath.toString())));
-		    IOUtils.copyBytes(in, out, hdfsConf);
-		    /*
-		    byte[] buffer = new byte[4096];
-		    
-		    while(in.read(buffer) != -1)
-		    	out.write(buffer);
-			*/
-			//hdfs.copyFromLocalFile(mapOutputFile.getOutputFile(), taskOutputFile);
-	
-			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
-		  	+ destPath.toString() + " size: " 
-					+ hdfs.getFileStatus(destPath).getLen() + " : finish!" );
-        }
-        
         sortPhase.complete();
         return;
       }
@@ -1951,10 +1939,20 @@ private Progress mapPhase;
       //lengths for each partition
       finalOutFileSize += partitions * APPROX_HEADER_LENGTH;
       finalIndexFileSize = partitions * MAP_OUTPUT_INDEX_RECORD_LENGTH;
-      Path finalOutputFile =
-          mapOutputFile.getOutputFileForWrite(finalOutFileSize);
+      
+      // If this map task is replication task, index file is stored as same path as
+      // normal map task case.
       Path finalIndexFile =
-          mapOutputFile.getOutputIndexFileForWrite(finalIndexFileSize);
+              mapOutputFile.getOutputIndexFileForWrite(finalIndexFileSize);
+      
+      Path finalOutputFile;
+      
+      if(!mapTask.isReplicationTask()) {
+    	  finalOutputFile =
+          mapOutputFile.getOutputFileForWrite(finalOutFileSize);
+      } else {
+    	  finalOutputFile = new Path("/data/replication"+mapId.toString()+"/file.out");
+      }
 
       //The output stream for the final single output file
       FSDataOutputStream finalOut = rfs.create(finalOutputFile, true, 4096);
@@ -1977,48 +1975,6 @@ private Progress mapPhase;
           sr.writeToFile(finalIndexFile, job);
         } finally {
           finalOut.close();
-        }
-        
-        // If isReplication is true, then here we distribute the final map output file to
-        // every replication manager at each node directly
-        // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
-        if(mapTask.isReplicationTask()) {
-      	  
-      	  LOG.info("Replicating map output data! : Case numSpill == 0");
-
-			Configuration hdfsConf = new Configuration();
-			String taskID;
-			Path destPath;
-			Path sourcePath;
-			
-			FileSystem hdfs = FileSystem.get(hdfsConf);
-			taskID = this.getTaskID().toString();
-			
-			sourcePath = mapOutputFile.getOutputFile();
-			destPath = new Path("/replication/"+taskID+"/file.out");
-			
-			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
-		  		  	+ sourcePath.toString() 
-		  		  	+ " size: " 
-		  		  	+ FileSystem.getLocal(hdfsConf).getLength(sourcePath) 
-		  		  	+ " : start!" );
-
-		    FSDataOutputStream out = hdfs.create(destPath, (short) 10);
-		    InputStream in = new BufferedInputStream
-		    					(new FileInputStream(
-		    						new File(sourcePath.toString())));
-		    IOUtils.copyBytes(in, out, hdfsConf);
-		    /*
-		    byte[] buffer = new byte[4096];
-		    
-		    while(in.read(buffer) != -1)
-		    	out.write(buffer);
-			*/
-			//hdfs.copyFromLocalFile(mapOutputFile.getOutputFile(), taskOutputFile);
-	
-			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
-		  	+ destPath.toString() + " size: " 
-					+ hdfs.getFileStatus(destPath).getLen() + " : finish!" );
         }
         
         sortPhase.complete();
@@ -2088,51 +2044,12 @@ private Progress mapPhase;
         for(int i = 0; i < numSpills; i++) {
           rfs.delete(filename[i],true);
         }
-        
-        // If isReplication is true, then here we distribute the final map output file to
-        // every replication manager at each node directly
-        // I use replication factor 10 of files in HDFS to mimic the concept of replication manager
         if(mapTask.isReplicationTask()) {
-      	  
-      	  LOG.info("Replicating map output data! : Case numSpill == n");
-      	  
-			Configuration hdfsConf = new Configuration();
-			String taskID;
-			Path destPath;
-			Path sourcePath;
-			
-			FileSystem hdfs = FileSystem.get(hdfsConf);
-			taskID = this.getTaskID().toString();
-			
-			sourcePath = mapOutputFile.getOutputFile();
-			destPath = new Path("/replication/"+taskID+"/file.out");
-			
-			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
-		  		  	+ sourcePath.toString() 
-		  		  	+ " size: " 
-		  		  	+ FileSystem.getLocal(hdfsConf).getLength(sourcePath) 
-		  		  	+ " : start!" );
-
-		    FSDataOutputStream out = hdfs.create(destPath, (short) 10);
-		    InputStream in = new BufferedInputStream
-		    					(new FileInputStream(
-		    						new File(sourcePath.toString())));
-		    IOUtils.copyBytes(in, out, hdfsConf);
-		    /*
-		    byte[] buffer = new byte[4096];
-		    
-		    while(in.read(buffer) != -1)
-		    	out.write(buffer);
-			*/
-			//hdfs.copyFromLocalFile(mapOutputFile.getOutputFile(), taskOutputFile);
-	
-			LOG.info("task[" + mapTask.getTaskID().toString() + "] materialization " 
-		  	+ destPath.toString() + " size: " 
-					+ hdfs.getFileStatus(destPath).getLen() + " : finish!" );
+		  FileSystem hdfs = FileSystem.get(job);
+		  hdfs.createNewFile(new Path("/replication/"+mapId+"/"+finalOutFileSize));
         }
-
+		LOG.info("size of spilled file : " + rfs.getLength(mapOutputFile.getOutputFile()));
         sortPhase.startNextPhase();
-        
       }
     }
     

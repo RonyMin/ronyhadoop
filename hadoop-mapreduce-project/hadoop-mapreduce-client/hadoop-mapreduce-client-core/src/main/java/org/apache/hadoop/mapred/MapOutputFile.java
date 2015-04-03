@@ -55,6 +55,14 @@ public abstract class MapOutputFile implements Configurable {
    * @throws IOException
    */
   public abstract Path getOutputFile() throws IOException;
+  
+  /**
+   * Return the path to replication MOF in local replication store
+   *
+   * @return path
+   * @throws IOException
+   */
+  public abstract Path getReplicationOutputFile() throws IOException;
 
   /**
    * Create a local map output file name.
@@ -64,7 +72,7 @@ public abstract class MapOutputFile implements Configurable {
    * @throws IOException
    */
   public abstract Path getOutputFileForWrite(long size) throws IOException;
-
+  
   /**
    * Create a local map output file name on the same volume.
    */

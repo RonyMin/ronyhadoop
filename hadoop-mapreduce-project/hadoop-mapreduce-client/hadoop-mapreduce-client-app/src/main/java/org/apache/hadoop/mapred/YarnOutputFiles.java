@@ -70,6 +70,17 @@ public class YarnOutputFiles extends MapOutputFile {
       new Path(getAttemptOutputDir(), MAP_OUTPUT_FILENAME_STRING);
     return lDirAlloc.getLocalPathToRead(attemptOutput.toString(), conf);
   }
+  
+  /**
+   * Return the path to replication MOF in local replication store
+   *
+   * @return path
+   * @throws IOException
+   */
+  public Path getReplicationOutputFile() throws IOException {
+	  Path attemptOutput = new Path("/data/replication/"+conf.get(JobContext.TASK_ATTEMPT_ID)+"/file.out");
+	  return lDirAlloc.getLocalPathToRead(attemptOutput.toString(), conf);
+  }
 
   /**
    * Create a local map output file name.

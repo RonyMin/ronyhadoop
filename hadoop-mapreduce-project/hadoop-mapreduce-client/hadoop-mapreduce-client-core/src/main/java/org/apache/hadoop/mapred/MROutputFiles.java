@@ -25,6 +25,7 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 
@@ -37,8 +38,8 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
-public class MROutputFiles extends MapOutputFile {
-
+public class MROutputFiles extends MapOutputFile {	
+	
   private LocalDirAllocator lDirAlloc =
     new LocalDirAllocator(MRConfig.LOCAL_DIR);
 
@@ -222,5 +223,17 @@ public class MROutputFiles extends MapOutputFile {
     }
     super.setConf(conf);
   }
+
+  /**
+   * Return the path to replication MOF in local replication store
+   *
+   * @return path
+   * @throws IOException
+   */
+@Override
+public Path getReplicationOutputFile() throws IOException {
+    return lDirAlloc.getLocalPathToRead(MRJobConfig.OUTPUT + Path.SEPARATOR
+            + MAP_OUTPUT_FILENAME_STRING, getConf());
+}
 
 }

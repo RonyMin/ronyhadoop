@@ -187,12 +187,24 @@ abstract public class Task implements Writable, Configurable {
   protected SecretKey tokenSecret;
   protected SecretKey shuffleSecret;
   protected GcTimeUpdater gcUpdater;
+  
+  // Rony
+  protected boolean isReplicationTask = false;
 
+  public boolean isReplicationTask() {
+	return isReplicationTask;
+  }
+
+  public void setReplicationTask(boolean isReplicationTask) {
+	this.isReplicationTask = isReplicationTask;
+  }
+  
   ////////////////////////////////////////////
   // Constructors
   ////////////////////////////////////////////
 
-  public Task() {
+
+public Task() {
     taskStatus = TaskStatus.createTaskStatus(isMapTask());
     taskId = new TaskAttemptID();
     spilledRecordsCounter = 
@@ -1096,13 +1108,20 @@ abstract public class Task implements Writable, Configurable {
     }
 
     if (isMapTask() && conf.getNumReduceTasks() > 0) {
-      try {
-        Path mapOutput =  mapOutputFile.getOutputFile();
-        FileSystem localFS = FileSystem.getLocal(conf);
-        return localFS.getFileStatus(mapOutput).getLen();
-      } catch (IOException e) {
-        LOG.warn ("Could not find output size " , e);
-      }
+    	if(!isReplicationTask()) {
+    		try {
+    			Path mapOutput =  mapOutputFile.getOutputFile();
+    			FileSystem localFS = FileSystem.getLocal(conf);
+    			return localFS.getFileStatus(mapOutput).getLen();
+      
+    			} catch (IOException e) {
+    				LOG.warn ("Could not find output size " , e);
+    			}
+    	} else {
+			Path mapOutput =  new Path("/data/replication/"+taskId+"/file.out");
+			FileSystem localFS = FileSystem.getLocal(conf);
+			return localFS.getFileStatus(mapOutput).getLen();
+    	}
     }
     return -1;
   }

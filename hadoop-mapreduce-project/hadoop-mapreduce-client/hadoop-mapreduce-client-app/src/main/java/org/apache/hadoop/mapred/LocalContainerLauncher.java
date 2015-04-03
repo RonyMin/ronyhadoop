@@ -516,6 +516,11 @@ public class LocalContainerLauncher extends AbstractService implements
     public Path getOutputFile() throws IOException {
       return path;
     }
+    
+    @Override
+    public Path getReplicationOutputFile() throws IOException {
+        throw new UnsupportedOperationException();
+    }
 
     @Override
     public Path getOutputFileForWrite(long size) throws IOException {
