@@ -250,13 +250,15 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
                                              long requestedSize,
                                              int fetcher
                                              ) throws IOException {
-    if (!canShuffleToMemory(requestedSize)) {
-      LOG.info(mapId + ": Shuffling to disk since " + requestedSize + 
+	  
+	if(!jobConf.getBoolean("rony.onlyDiskShuffle", false)) {
+		if (!canShuffleToMemory(requestedSize)) {
+			LOG.info(mapId + ": Shuffling to disk since " + requestedSize + 
                " is greater than maxSingleShuffleLimit (" + 
                maxSingleShuffleLimit + ")");
-      return new OnDiskMapOutput<K,V>(mapId, reduceId, this, requestedSize,
+			return new OnDiskMapOutput<K,V>(mapId, reduceId, this, requestedSize,
                                       jobConf, mapOutputFile, fetcher, true);
-    }
+		}
     
     // Stall shuffle if we are above the memory limit
 
@@ -273,18 +275,25 @@ public class MergeManagerImpl<K, V> implements MergeManager<K, V> {
     // fetching, this will automatically trigger a merge thereby unlocking
     // all the stalled threads
     
-    if (usedMemory > memoryLimit) {
-      LOG.debug(mapId + ": Stalling shuffle since usedMemory (" + usedMemory
-          + ") is greater than memoryLimit (" + memoryLimit + ")." + 
-          " CommitMemory is (" + commitMemory + ")"); 
-      return null;
-    }
+		if (usedMemory > memoryLimit) {
+			LOG.debug(mapId + ": Stalling shuffle since usedMemory (" + usedMemory
+					+ ") is greater than memoryLimit (" + memoryLimit + ")." + 
+					" CommitMemory is (" + commitMemory + ")"); 
+			return null;
+		}
     
     // Allow the in-memory shuffle to progress
-    LOG.debug(mapId + ": Proceeding with shuffle since usedMemory ("
-        + usedMemory + ") is lesser than memoryLimit (" + memoryLimit + ")."
-        + "CommitMemory is (" + commitMemory + ")"); 
-    return unconditionalReserve(mapId, requestedSize, true);
+		LOG.debug(mapId + ": Proceeding with shuffle since usedMemory ("
+				+ usedMemory + ") is lesser than memoryLimit (" + memoryLimit + ")."
+				+ "CommitMemory is (" + commitMemory + ")"); 
+		return unconditionalReserve(mapId, requestedSize, true);
+		} else {
+	      LOG.info(mapId + ": Shuffling to disk since " + requestedSize + 
+	               " is greater than maxSingleShuffleLimit (" + 
+	               maxSingleShuffleLimit + ")");
+	      return new OnDiskMapOutput<K,V>(mapId, reduceId, this, requestedSize,
+	                                      jobConf, mapOutputFile, fetcher, true);
+		}
   }
   
   /**
