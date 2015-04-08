@@ -92,10 +92,6 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
     this.outputPath = outputPath;
     tmpOutputPath = getTempPath(outputPath, fetcher);
     this.conf = conf;
-    if(conf.get("rony.network").equals("1G"))
-    	this.conf.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
-    else
-    	this.conf.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
     this.mapId = getMapId().toString();
     this.replicationMOFPath = new Path("/data/replication/"+this.mapId+"/file.out");
     try {

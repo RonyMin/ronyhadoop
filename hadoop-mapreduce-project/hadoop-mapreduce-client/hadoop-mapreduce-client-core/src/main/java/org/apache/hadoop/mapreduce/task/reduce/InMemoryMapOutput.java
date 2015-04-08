@@ -95,10 +95,6 @@ class InMemoryMapOutput<K, V> extends MapOutput<K, V> {
     this.job = new Configuration();
     this.replicationTaskSet = new HashSet<String>();
     this.existedMOFinLocalReplicationStore = new HashSet<String>();
-    if(conf.get("rony.network").equals("1G"))
-    	job.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
-    else
-    	job.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
     this.replicationMOFPath = new Path("/data/replication/"+mapId.toString()+"/file.out");
     try {
 		this.rawLocalFS = ((LocalFileSystem)FileSystem.getLocal(job)).getRaw();

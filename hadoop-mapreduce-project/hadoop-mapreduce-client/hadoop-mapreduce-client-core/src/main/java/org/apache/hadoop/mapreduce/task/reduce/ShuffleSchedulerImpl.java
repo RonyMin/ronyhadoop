@@ -139,12 +139,6 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
     this.maxDelay = job.getLong(MRJobConfig.MAX_SHUFFLE_FETCH_RETRY_DELAY,
         MRJobConfig.DEFAULT_MAX_SHUFFLE_FETCH_RETRY_DELAY);
     this.InMemoryReplicationStore = new HashMap<String, MapOutput>();
-    
-    this.conf = new Configuration();
-    if(job.get("rony.network").equals("1G"))
-    	conf.set("fs.defaultFS", "hdfs://10.150.20.22:8020");
-    else
-    	conf.set("fs.defaultFS", "hdfs://172.30.1.100:8020");
 
   }
 
