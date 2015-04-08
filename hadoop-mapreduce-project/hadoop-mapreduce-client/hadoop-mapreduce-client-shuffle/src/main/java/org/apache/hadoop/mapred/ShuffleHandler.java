@@ -456,17 +456,15 @@ public class ShuffleHandler extends AuxiliaryService {
 
   class Shuffle extends SimpleChannelUpstreamHandler {
 
-    private final Configuration conf;
     private final IndexCache indexCache;
     private final LocalDirAllocator lDirAlloc =
       new LocalDirAllocator(YarnConfiguration.NM_LOCAL_DIRS);
     private int port;
 
     public Shuffle(Configuration conf) {
-      this.conf = conf;
+      jobConf = conf;
       indexCache = new IndexCache(new JobConf(conf));
       this.port = conf.getInt(SHUFFLE_PORT_CONFIG_KEY, DEFAULT_SHUFFLE_PORT);
-      jobConf = conf;
     }
     
     public void setPort(int port) {
@@ -661,13 +659,13 @@ public class ShuffleHandler extends AuxiliaryService {
   		
     	// Index file
 		Path indexFileName =
-				lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
+				lDirAlloc.getLocalPathToRead(base + "/file.out.index", jobConf);
 		IndexRecord info =
 				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
     	
     	if(!replicationTask.contains(mapId)) {
     		mapOutputFileName =
-    				lDirAlloc.getLocalPathToRead(base + "/file.out", conf);
+    				lDirAlloc.getLocalPathToRead(base + "/file.out", jobConf);
     		LOG.info("(Rony shuffleHandler.getMapOutputInfo) set normal case MOF: " 
     	        	+ mapOutputFileName + ", index : " + indexFileName);
     	} else {
@@ -704,7 +702,7 @@ public class ShuffleHandler extends AuxiliaryService {
 		
 		// Index file
 		Path indexFileName =
-				lDirAlloc.getLocalPathToRead(base + "/file.out.index", conf);
+				lDirAlloc.getLocalPathToRead(base + "/file.out.index", jobConf);
 		IndexRecord info =
 				indexCache.getIndexInformation(mapId, reduce, indexFileName, user);
 		ShuffleHeader header =
@@ -904,20 +902,22 @@ public class ShuffleHandler extends AuxiliaryService {
   private FileStatus[] replicationTaskStatus;
 
   public void updateReplicationMap() throws IOException {
-
+	  
 	  // Shuffle.getMapOutputInfo uses a set of replication map task
 	  // in HDFS's replication board
 	  // to change the MapOutputInfo's path of MOF
 	  FileSystem hdfs = FileSystem.get(jobConf);
-	  
+
 	  this.replicationBoard = new Path("/replication");
 	  LOG.info("ShuffleHandler: Building replication task set...");
 	  try {
 		this.replicationTaskStatus = hdfs.listStatus(replicationBoard);
+
 	  } catch (Exception e) {
 		e.printStackTrace();
 	  }
-		
+	  
+	if(this.replicationTaskStatus != null) {
 	  for(FileStatus fs : replicationTaskStatus) {
 		String task = fs.getPath().toString().split("/")[4];
 		if(!replicationTask.contains(task)) {
@@ -925,5 +925,6 @@ public class ShuffleHandler extends AuxiliaryService {
 		replicationTask.add(task);
 	  }
 	}  
+  }
   }
 }
