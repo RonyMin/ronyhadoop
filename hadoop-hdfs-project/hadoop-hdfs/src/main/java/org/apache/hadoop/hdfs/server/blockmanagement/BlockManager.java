@@ -119,6 +119,8 @@ public class BlockManager {
   private final AtomicLong excessBlocksCount = new AtomicLong(0L);
   private final AtomicLong postponedMisreplicatedBlocksCount = new AtomicLong(0L);
   
+  private HashMap<String, ArrayList<DatanodeStorageInfo>> partitionedGroup2TargetNodes;
+  
   /** Used by metrics */
   public long getPendingReplicationBlocksCount() {
     return pendingReplicationBlocksCount;
@@ -339,6 +341,8 @@ public class BlockManager {
     LOG.info("replicationRecheckInterval = " + replicationRecheckInterval);
     LOG.info("encryptDataTransfer        = " + encryptDataTransfer);
     LOG.info("maxNumBlocksToLog          = " + maxNumBlocksToLog);
+    
+    partitionedGroup2TargetNodes = new HashMap<String, ArrayList<DatanodeStorageInfo>>();
   }
 
   private static BlockTokenSecretManager createBlockTokenSecretManager(
@@ -1418,7 +1422,7 @@ public class BlockManager {
 
     return scheduledWork;
   }
-
+  
   /**
    * Choose target datanodes according to the replication policy.
    * 
@@ -1431,12 +1435,65 @@ public class BlockManager {
       final int numOfReplicas, final DatanodeDescriptor client,
       final Set<Node> excludedNodes,
       final long blocksize, List<String> favoredNodes) throws IOException {
+	  
     List<DatanodeDescriptor> favoredDatanodeDescriptors = 
         getDatanodeDescriptors(favoredNodes);
-    final DatanodeStorageInfo[] targets = blockplacement.chooseTarget(src,
-        numOfReplicas, client, excludedNodes, blocksize, 
-        // TODO: get storage type from file
-        favoredDatanodeDescriptors, StorageType.DEFAULT);
+    
+    final DatanodeStorageInfo[] targets;
+    
+    if(checkPREFPartitionedTable(src)) {
+    	
+    	// PREF-partitioned input is will be stored at
+    	// hdfs://tpch/${Partitioning method}/${Table name}/${TableName}_p-r-${partitionNumber}
+    	LOG.info("Incoming file for checking PREF-partitioned table: " +src);
+    	String[] tokens = src.split("/");
+		String tempFileName = tokens[tokens.length-1];
+		LOG.info("tempFileName: " + tempFileName);
+		String tempPartitionedFileName = tempFileName.split("_")[0]; // ${TableName}
+		LOG.info("tempPartitionedFileName: " + tempPartitionedFileName);
+		tokens = tempFileName.split("_")[1].split("-"); // p-r-${partitionNumber}
+    	String partitionedTable = tempPartitionedFileName;
+    	String partitionGroup = tokens[2];
+    	LOG.info("partitionedTable: " + partitionedTable + ", partitionGroup: " + partitionGroup);
+    	
+    	LOG.info("Managing PREF-partitioned table: " + partitionedTable + ", with partition group : " + partitionGroup);
+    	
+    	if(partitionedGroup2TargetNodes.containsKey(partitionGroup)) {
+
+        	LOG.info("Partitioned table [" + partitionGroup + "] is already added into partitionedGroup2TargetNodes list");
+    		ArrayList<DatanodeStorageInfo> dsi = partitionedGroup2TargetNodes.get(partitionGroup);
+    		targets = new DatanodeStorageInfo[dsi.size()];
+    			
+    		for(int i = 0 ; i < dsi.size() ; i++)
+    			targets[i] = dsi.get(i);
+    		
+    	} else {
+    	
+    		LOG.info("Adding partitioned table [" + partitionGroup + "] into partitionedGroup2TargetNodes list");
+    		
+    		targets = blockplacement.chooseTarget(src,
+		            numOfReplicas, client, excludedNodes, blocksize, 
+		            // TODO: get storage type from file
+		            favoredDatanodeDescriptors, StorageType.DEFAULT);
+		    
+    		ArrayList<DatanodeStorageInfo> dsi = new ArrayList<DatanodeStorageInfo>(targets.length);
+		    
+    		for(int i = 0 ; i < targets.length ; i++)
+    			dsi.add(targets[i]);
+			
+    		partitionedGroup2TargetNodes.put(partitionGroup, dsi);
+    	}
+    	
+    } else {
+    	
+    	LOG.info("This case is not PREF-partitioning case. Do it as usual");
+		
+    	targets = blockplacement.chooseTarget(src,
+    			numOfReplicas, client, excludedNodes, blocksize, 
+    			// TODO: get storage type from file
+    			favoredDatanodeDescriptors, StorageType.DEFAULT);
+    }
+
     if (targets.length < minReplication) {
       throw new IOException("File " + src + " could only be replicated to "
           + targets.length + " nodes instead of minReplication (="
@@ -1446,7 +1503,21 @@ public class BlockManager {
           + (excludedNodes == null? "no": excludedNodes.size())
           + " node(s) are excluded in this operation.");
     }
+    
+    LOG.info("selected target nodes: ");
+    for(DatanodeStorageInfo info : targets)
+    	LOG.info(info.getDatanodeDescriptor().getIpAddr());
+    
     return targets;
+  }
+  
+  public boolean checkPREFPartitionedTable(String src) {
+	  
+	  if(src.contains("_p-")) {
+		  return true;
+	  } else {
+		  return false;
+	  }
   }
 
   /**
