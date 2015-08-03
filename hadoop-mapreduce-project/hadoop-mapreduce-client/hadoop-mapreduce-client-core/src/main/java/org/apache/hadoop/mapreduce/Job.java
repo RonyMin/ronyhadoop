@@ -1514,5 +1514,4 @@ public class Job extends JobContextImpl implements JobContext {
     updateStatus();
     return status.isUber();
   }
-  
 }

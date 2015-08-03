@@ -1015,7 +1015,7 @@ public class RMContainerAllocator extends RMContainerRequestor
       // try to assign to all nodes first to match node local
       Iterator<Container> it = allocatedContainers.iterator();
       while(it.hasNext() && maps.size() > 0){
-        Container allocated = it.next();        
+        Container allocated = it.next();
         Priority priority = allocated.getPriority();
         assert PRIORITY_MAP.equals(priority);
         // "if (maps.containsKey(tId))" below should be almost always true.

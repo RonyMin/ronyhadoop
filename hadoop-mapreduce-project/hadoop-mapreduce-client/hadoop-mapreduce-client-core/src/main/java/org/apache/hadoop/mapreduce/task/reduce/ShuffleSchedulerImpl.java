@@ -193,7 +193,6 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
 
     if (!finishedMaps[mapIndex]) {
       output.commit();
-      MapOutput<K,V> replicatedOutput;
       this.InMemoryReplicationStore.put(mapId.toString(), output);
       finishedMaps[mapIndex] = true;
       shuffledMapsCounter.increment(1);

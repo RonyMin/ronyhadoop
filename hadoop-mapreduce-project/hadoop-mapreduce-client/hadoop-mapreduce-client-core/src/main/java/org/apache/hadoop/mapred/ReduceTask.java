@@ -466,6 +466,8 @@ public class ReduceTask extends Task {
     private final RecordWriter<K, V> real;
     private final org.apache.hadoop.mapred.Counters.Counter reduceOutputCounter;
     private final org.apache.hadoop.mapred.Counters.Counter fileOutputByteCounter;
+    private final org.apache.hadoop.mapred.Counters.Counter ronyReduceOutputRecCounter;
+    private final org.apache.hadoop.mapred.Counters.Counter ronyReducefileOutputByteCounter;
     private final List<Statistics> fsStats;
 
     @SuppressWarnings({ "deprecation", "unchecked" })
@@ -473,6 +475,8 @@ public class ReduceTask extends Task {
         TaskReporter reporter, String finalName) throws IOException {
       this.reduceOutputCounter = reduce.reduceOutputCounter;
       this.fileOutputByteCounter = reduce.fileOutputByteCounter;
+      this.ronyReducefileOutputByteCounter = reporter.getCounter("RonyCounter", "Reduce output bytes");
+      this.ronyReduceOutputRecCounter = reporter.getCounter("RonyCounter", "Reduce output recs");
       List<Statistics> matchedStats = null;
       if (job.getOutputFormat() instanceof FileOutputFormat) {
         matchedStats = getFsStatistics(FileOutputFormat.getOutputPath(job), job);
@@ -485,6 +489,7 @@ public class ReduceTask extends Task {
           reporter);
       long bytesOutCurr = getOutputBytes(fsStats);
       fileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
+      ronyReducefileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
     }
 
     @Override
@@ -493,7 +498,9 @@ public class ReduceTask extends Task {
       real.write(key, value);
       long bytesOutCurr = getOutputBytes(fsStats);
       fileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
+      ronyReducefileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
       reduceOutputCounter.increment(1);
+      ronyReduceOutputRecCounter.increment(1);
     }
 
     @Override
@@ -502,6 +509,7 @@ public class ReduceTask extends Task {
       real.close(reporter);
       long bytesOutCurr = getOutputBytes(fsStats);
       fileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
+      ronyReducefileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
     }
 
     private long getOutputBytes(List<Statistics> stats) {
@@ -519,6 +527,8 @@ public class ReduceTask extends Task {
     private final org.apache.hadoop.mapreduce.RecordWriter<K,V> real;
     private final org.apache.hadoop.mapreduce.Counter outputRecordCounter;
     private final org.apache.hadoop.mapreduce.Counter fileOutputByteCounter;
+    private final org.apache.hadoop.mapreduce.Counter ronyOutputByteCounter;
+    private final org.apache.hadoop.mapreduce.Counter ronyOutputRecordCounter;
     private final List<Statistics> fsStats;
 
     @SuppressWarnings("unchecked")
@@ -527,6 +537,8 @@ public class ReduceTask extends Task {
         throws InterruptedException, IOException {
       this.outputRecordCounter = reduce.reduceOutputCounter;
       this.fileOutputByteCounter = reduce.fileOutputByteCounter;
+      this.ronyOutputByteCounter = taskContext.getCounter("RonyCounter", "Reduce output bytes");
+      this.ronyOutputRecordCounter = taskContext.getCounter("RonyCounter", "Reduce output records");
 
       List<Statistics> matchedStats = null;
       if (reduce.outputFormat instanceof org.apache.hadoop.mapreduce.lib.output.FileOutputFormat) {
@@ -541,6 +553,7 @@ public class ReduceTask extends Task {
           .getRecordWriter(taskContext);
       long bytesOutCurr = getOutputBytes(fsStats);
       fileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
+      ronyOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
     }
 
     @Override
@@ -550,6 +563,7 @@ public class ReduceTask extends Task {
       real.close(context);
       long bytesOutCurr = getOutputBytes(fsStats);
       fileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
+      ronyOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
     }
 
     @Override
@@ -558,6 +572,8 @@ public class ReduceTask extends Task {
       real.write(key,value);
       long bytesOutCurr = getOutputBytes(fsStats);
       fileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
+      ronyOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
+      ronyOutputRecordCounter.increment(1);
       outputRecordCounter.increment(1);
     }
 

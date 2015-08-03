@@ -173,7 +173,7 @@ public class SchedulerUtils {
       
       // Log resource change
       log.info("Resource change on node: " + rmNode.getNodeAddress() 
-          + " with delta: CPU: " + deltaResource.getMemory() + "core, Memory: "
+          + " with delta: CPU: " + deltaResource.getVirtualCores() + "core, Memory: "
           + deltaResource.getMemory() +"MB");
     }
   }

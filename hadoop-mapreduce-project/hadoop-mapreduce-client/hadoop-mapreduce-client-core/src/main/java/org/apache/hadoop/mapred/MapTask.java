@@ -519,6 +519,7 @@ private Progress mapPhase;
     private final org.apache.hadoop.mapreduce.RecordReader<K,V> real;
     private final org.apache.hadoop.mapreduce.Counter inputRecordCounter;
     private final org.apache.hadoop.mapreduce.Counter fileInputByteCounter;
+    private final org.apache.hadoop.mapred.Counters.Counter ronyReadByteCounter;
     private final TaskReporter reporter;
     private final List<Statistics> fsStats;
     
@@ -532,6 +533,7 @@ private Progress mapPhase;
           .getCounter(TaskCounter.MAP_INPUT_RECORDS);
       this.fileInputByteCounter = reporter
           .getCounter(FileInputFormatCounter.BYTES_READ);
+      this.ronyReadByteCounter = reporter.getCounter("RonyCounter", "Map Input Bytes");
 
       List <Statistics> matchedStats = null;
       if (split instanceof org.apache.hadoop.mapreduce.lib.input.FileSplit) {
@@ -544,6 +546,7 @@ private Progress mapPhase;
       this.real = inputFormat.createRecordReader(split, taskContext);
       long bytesInCurr = getInputBytes(fsStats);
       fileInputByteCounter.increment(bytesInCurr - bytesInPrev);
+      ronyReadByteCounter.increment(bytesInCurr - bytesInPrev);
     }
 
     @Override
@@ -552,6 +555,7 @@ private Progress mapPhase;
       real.close();
       long bytesInCurr = getInputBytes(fsStats);
       fileInputByteCounter.increment(bytesInCurr - bytesInPrev);
+      ronyReadByteCounter.increment(bytesInCurr - bytesInPrev);
     }
 
     @Override
@@ -577,6 +581,7 @@ private Progress mapPhase;
       real.initialize(split, context);
       long bytesInCurr = getInputBytes(fsStats);
       fileInputByteCounter.increment(bytesInCurr - bytesInPrev);
+      ronyReadByteCounter.increment(bytesInCurr - bytesInPrev);
     }
 
     @Override
@@ -588,6 +593,7 @@ private Progress mapPhase;
         inputRecordCounter.increment(1);
       }
       fileInputByteCounter.increment(bytesInCurr - bytesInPrev);
+      ronyReadByteCounter.increment(bytesInCurr - bytesInPrev);
       reporter.setProgress(getProgress());
       return result;
     }
@@ -938,6 +944,7 @@ private Progress mapPhase;
     private Serializer<V> valSerializer;
     private CombinerRunner<K,V> combinerRunner;
     private CombineOutputCollector<K, V> combineCollector;
+    boolean realDuplicateDataSizeCheck = false;
 
     // Compression for map-outputs
     private CompressionCodec codec;
@@ -989,6 +996,10 @@ private Progress mapPhase;
     private Counters.Counter mapOutputByteCounter;
     private Counters.Counter mapOutputRecordCounter;
     private Counters.Counter fileOutputByteCounter;
+    
+    private Counters.Counter duplicatedMapOutputByteCounter;
+    private Counters.Counter partitionedMapOutputByteCounter;
+    private Counters.Counter realDuplicatedMapOutputByteCounter;
 
     final ArrayList<SpillRecord> indexCacheList =
       new ArrayList<SpillRecord>();
@@ -1000,6 +1011,8 @@ private Progress mapPhase;
     private MapOutputFile mapOutputFile;
     private Progress sortPhase;
     private Counters.Counter spilledRecordsCounter;
+    
+    private boolean avoidSort;
 
     public MapOutputBuffer() {
     }
@@ -1068,7 +1081,17 @@ private Progress mapPhase;
         reporter.getCounter(TaskCounter.MAP_OUTPUT_RECORDS);
       fileOutputByteCounter = reporter
           .getCounter(TaskCounter.MAP_OUTPUT_MATERIALIZED_BYTES);
-
+      
+      duplicatedMapOutputByteCounter = 
+    		  reporter.getCounter("RonyCounter", "Original Duplicated data");
+      realDuplicatedMapOutputByteCounter =
+    		  reporter.getCounter("RonyCounter", "Duplicated data powered by replication store");
+      partitionedMapOutputByteCounter = 
+    		  reporter.getCounter("RonyCounter", "Partitioned (not duplicated) data");
+      
+      // sort avoidance
+      avoidSort = job.getBoolean("rony.sort.avoidance", false);
+      
       // compression
       if (job.getCompressMapOutput()) {
         Class<? extends CompressionCodec> codecClass =
@@ -1119,6 +1142,7 @@ private Progress mapPhase;
      */
     public synchronized void collect(K key, V value, final int partition
                                      ) throws IOException {
+    	
       reporter.progress();
       if (key.getClass() != keyClass) {
         throw new IOException("Type mismatch in key from map: expected "
@@ -1652,11 +1676,14 @@ private Progress mapPhase;
           (kvstart >= kvend
           ? kvstart
           : kvmeta.capacity() + kvstart) / NMETA;
-        sorter.sort(MapOutputBuffer.this, mstart, mend, reporter);
+        
+        if(!avoidSort)
+        	sorter.sort(MapOutputBuffer.this, mstart, mend, reporter);
+        
         int spindex = mstart;
         final IndexRecord rec = new IndexRecord();
         final InMemValBytes value = new InMemValBytes();
-        for (int i = 0; i < partitions; ++i) {
+        for (int i = 0; i < partitions; ++i) { 
           IFile.Writer<K, V> writer = null;
           try {
             long segmentStart = out.getPos();
@@ -1706,6 +1733,7 @@ private Progress mapPhase;
             	rec.startOffset = segmentStart;
             	rec.rawLength = writer.getRawLength();
             	rec.partLength = writer.getCompressedLength();
+            	partitionedMapOutputByteCounter.increment(rec.rawLength);
             	spillRec.putIndex(rec, i);
             	LOG.info("Generating index for partition#" + i + " [startOffset: " 
             	+ rec.startOffset + ", rawLength: " + rec.rawLength + ", partLength: " 
@@ -1716,10 +1744,15 @@ private Progress mapPhase;
             	rec.startOffset = 0;
             	rec.rawLength = mapTask.getReplicationTaskRawLength();
             	rec.partLength = mapTask.getReplicationTaskPartLength();
+            	duplicatedMapOutputByteCounter.increment(rec.rawLength);
             	LOG.info("Generating pseudo index for partition#" + i + " [startOffset: " 
             	+ rec.startOffset + ", rawLength: " + rec.rawLength + ", partLength: " 
             	+ rec.partLength);
             	spillRec.putIndex(rec, i);
+            	if(!realDuplicateDataSizeCheck) {
+            		realDuplicateDataSizeCheck = true;
+            		realDuplicatedMapOutputByteCounter.increment(rec.rawLength);
+            	}
             }
 
             writer = null;
@@ -1888,8 +1921,7 @@ private Progress mapPhase;
         filename[i] = mapOutputFile.getSpillFile(i);
         finalOutFileSize += rfs.getFileStatus(filename[i]).getLen();
       }
-      
-      
+
       // If isReplication is true, then here we materialize the MOF to
       // its local replication store first.
       // In this case, we just rename the spilled MOF to path in the local replication store.
@@ -1897,9 +1929,12 @@ private Progress mapPhase;
       // we pass the output stream of MOF to that reduce task
       // to materialize replication data only once.
       // If other reduce tasks that are launched at the same remote site
-      // Then they just need to read that materialized MOF.
+      // they just read that materialized MOF from replication store.
       
       if (numSpills == 1) { //the spill is the final output
+    	  
+    	  long MOFSize = 0;
+    	  
     	  if(!mapTask.isReplicationTask()) {
     		  Path originalPath = filename[0];
     		  sameVolRename(filename[0],
@@ -1914,10 +1949,11 @@ private Progress mapPhase;
     		  rfs.moveToLocalFile(filename[0], targetMOFPath);
     		  LOG.info("spilled file " + filename[0] + " is moved to local replication store: " + targetMOFPath);
     		  FileSystem hdfs = FileSystem.get(job);
-    		  long MOFSize = rfs.getLength(targetMOFPath);
+    		  MOFSize = rfs.getLength(targetMOFPath);
   			  LOG.info("size of spilled file : " + MOFSize);
     		  hdfs.createNewFile(new Path("/replication/"+mapId+"/"+MOFSize));
     	  }
+    	  
         if (indexCacheList.size() == 0) {
           sameVolRename(mapOutputFile.getSpillIndexFile(0),
             mapOutputFile.getOutputIndexFileForWriteInVolume(filename[0]));
@@ -1949,7 +1985,7 @@ private Progress mapPhase;
       
       if(!mapTask.isReplicationTask()) {
     	  finalOutputFile =
-          mapOutputFile.getOutputFileForWrite(finalOutFileSize);
+    			  mapOutputFile.getOutputFileForWrite(finalOutFileSize);
       } else {
     	  finalOutputFile = new Path("/data/replication"+mapId.toString()+"/file.out");
       }

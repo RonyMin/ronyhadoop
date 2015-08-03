@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.mapreduce;
 
+import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
+
 import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -47,8 +49,6 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.QueueACL;
-import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
-
 import org.apache.hadoop.mapreduce.filecache.ClientDistributedCacheManager;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
@@ -486,6 +486,7 @@ class JobSubmitter {
   private <T extends InputSplit>
   int writeNewSplits(JobContext job, Path jobSubmitDir) throws IOException,
       InterruptedException, ClassNotFoundException {
+	  
     Configuration conf = job.getConfiguration();
     InputFormat<?, ?> input =
       ReflectionUtils.newInstance(job.getInputFormatClass(), conf);
@@ -505,6 +506,7 @@ class JobSubmitter {
       Path jobSubmitDir) throws IOException,
       InterruptedException, ClassNotFoundException {
     JobConf jConf = (JobConf)job.getConfiguration();
+    
     int maps;
     if (jConf.getUseNewMapper()) {
       maps = writeNewSplits(job, jobSubmitDir);
@@ -517,6 +519,7 @@ class JobSubmitter {
   //method to write splits for old api mapper.
   private int writeOldSplits(JobConf job, Path jobSubmitDir) 
   throws IOException {
+  
     org.apache.hadoop.mapred.InputSplit[] splits =
     job.getInputFormat().getSplits(job, job.getNumMapTasks());
     // sort the splits into order based on size, so that the biggest

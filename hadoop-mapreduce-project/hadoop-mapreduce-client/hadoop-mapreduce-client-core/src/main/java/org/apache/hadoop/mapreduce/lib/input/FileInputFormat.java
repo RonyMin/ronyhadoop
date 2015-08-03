@@ -375,9 +375,7 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
     List<FileStatus> files = listStatus(job);
     for (FileStatus file: files) {
       Path path = file.getPath();
-      System.out.println("input file: " + path.toString());
       long length = file.getLen();
-      System.out.println("length of input file: " + file.getLen());
       if (length != 0) {
         BlockLocation[] blkLocations;
         if (file instanceof LocatedFileStatus) {
@@ -406,9 +404,9 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
         } else { // not splitable
           splits.add(makeSplit(path, 0, length, blkLocations[0].getHosts()));
         }
-      } else { 
+      } else {
         //Create empty hosts array for zero length files
-        splits.add(makeSplit(path, 0, length, new String[0]));
+        //splits.add(makeSplit(path, 0, length, new String[0]));
       }
     }
     // Save the number of input files for metrics/loadgen

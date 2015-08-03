@@ -329,22 +329,22 @@ public class CapacityScheduler extends AbstractYarnScheduler
    * @param cs
    */
   static void schedule(CapacityScheduler cs) {
-    // First randomize the start point
-    int current = 0;
-    Collection<FiCaSchedulerNode> nodes = cs.getAllNodes().values();
-    int start = random.nextInt(nodes.size());
-    for (FiCaSchedulerNode node : nodes) {
-      if (current++ >= start) {
-        cs.allocateContainersToNode(node);
-      }
-    }
-    // Now, just get everyone to be safe
-    for (FiCaSchedulerNode node : nodes) {
-      cs.allocateContainersToNode(node);
-    }
-    try {
-      Thread.sleep(cs.getAsyncScheduleInterval());
-    } catch (InterruptedException e) {}
+		// First randomize the start point
+		int current = 0;
+		Collection<FiCaSchedulerNode> nodes = cs.getAllNodes().values();
+		int start = random.nextInt(nodes.size());
+		for (FiCaSchedulerNode node : nodes) {
+			if (current++ >= start) {
+				cs.allocateContainersToNode(node);
+			}
+		}
+		// Now, just get everyone to be safe
+		for (FiCaSchedulerNode node : nodes) {
+			cs.allocateContainersToNode(node);
+		}
+		try {
+			Thread.sleep(cs.getAsyncScheduleInterval());
+		} catch (InterruptedException e) {}
   }
   
   static class AsyncScheduleThread extends Thread {

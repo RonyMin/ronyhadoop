@@ -41,7 +41,7 @@ class CopyCommands {
     factory.addClass(CopyFromLocal.class, "-copyFromLocal");
     factory.addClass(CopyToLocal.class, "-copyToLocal");
     factory.addClass(Get.class, "-get");
-    factory.addClass(Put.class, "-put");
+  
     factory.addClass(AppendToFile.class, "-appendToFile");
   }
 

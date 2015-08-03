@@ -22,13 +22,14 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.FSDataOutputStream;
-
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.compress.CompressionCodec;
@@ -36,12 +37,13 @@ import org.apache.hadoop.io.compress.GzipCodec;
 import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.hadoop.util.*;
+import org.apache.hadoop.util.ReflectionUtils;
 
 /** An {@link OutputFormat} that writes plain text files. */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
 public class TextOutputFormat<K, V> extends FileOutputFormat<K, V> {
+  private static final Log LOG = LogFactory.getLog(TextOutputFormat.class);
   public static String SEPERATOR = "mapreduce.output.textoutputformat.separator";
   protected static class LineRecordWriter<K, V>
     extends RecordWriter<K, V> {

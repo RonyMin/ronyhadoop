@@ -59,6 +59,8 @@ public static final String COMPRESS_CODEC =
 "mapreduce.output.fileoutputformat.compress.codec";
 public static final String COMPRESS_TYPE = "mapreduce.output.fileoutputformat.compress.type";
 public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir";
+public static boolean coPartitionTask;
+public static Configuration jobConf;
 
   @Deprecated
   public static enum Counter {
@@ -156,6 +158,9 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
    * the map-reduce job.
    */
   public static void setOutputPath(Job job, Path outputDir) {
+	  
+	  jobConf = job.getConfiguration();
+	  
     try {
       outputDir = outputDir.getFileSystem(job.getConfiguration()).makeQualified(
           outputDir);
@@ -259,16 +264,30 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
   public synchronized static String getUniqueFile(TaskAttemptContext context,
                                                   String name,
                                                   String extension) {
+
     TaskID taskId = context.getTaskAttemptID().getTaskID();
     int partition = taskId.getId();
     StringBuilder result = new StringBuilder();
-    result.append(name);
-    result.append('-');
-    result.append(
+    
+    if(!coPartitionTask)	{
+    	
+    	result.append(name);
+    	result.append('-');
+    	result.append(
         TaskID.getRepresentingCharacter(taskId.getTaskType()));
-    result.append('-');
-    result.append(NUMBER_FORMAT.format(partition));
-    result.append(extension);
+    	result.append('-');
+    	result.append(NUMBER_FORMAT.format(partition));
+    	result.append(extension);
+    	
+    } else {
+    	
+    	result.append(name);
+    	result.append("_");
+    	result.append("p");
+    	result.append(NUMBER_FORMAT.format(partition));
+    	result.append(extension);
+    }
+    
     return result.toString();
   }
 
@@ -284,7 +303,7 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
     FileOutputCommitter committer = 
       (FileOutputCommitter) getOutputCommitter(context);
     return new Path(committer.getWorkPath(), getUniqueFile(context, 
-      getOutputName(context), extension));
+    			getOutputName(context), extension));
   }
 
   /**
@@ -309,6 +328,11 @@ public static final String OUTDIR = "mapreduce.output.fileoutputformat.outputdir
       committer = new FileOutputCommitter(output, context);
     }
     return committer;
+  }
+  
+  public static void setPartitioningTask(Job job, boolean copartitioning) {
+	jobConf = job.getConfiguration();
+	coPartitionTask = copartitioning;
   }
 }
 

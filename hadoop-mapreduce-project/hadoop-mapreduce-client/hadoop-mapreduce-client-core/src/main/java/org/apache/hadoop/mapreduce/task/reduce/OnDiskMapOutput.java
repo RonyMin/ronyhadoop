@@ -139,6 +139,7 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
 	    		MOFSize = rawLocalFS.getLength(replicationMOFPath);
 	    		LOG.info("Materializing replication MOF finished...! MOFSize: " + MOFSize 
 	    				+ ", comp Size: " + compressedLength + ", file size: " + rawLocalFS.getFileStatus(replicationMOFPath).getLen());
+	    		reporter.incrCounter("RonyCounter", "Materialized MOF", MOFSize);
 	  		  	disk.close();
 	  		  	
 	    	// In the middle of MOF materialization
@@ -183,6 +184,7 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
 				metrics.inputBytes(n);
 				reporter.progress();
 			}
+			reporter.incrCounter("RonyCounter", "Read from local replication store", compressedLength - bytesLeft);
 
 			LOG.info("[Replicated MOF] Read " + (compressedLength - bytesLeft) + 
 					" bytes from map-output for " + getMapId());
@@ -226,6 +228,7 @@ class OnDiskMapOutput<K, V> extends MapOutput<K, V> {
 	        reporter.progress();
 	      }
 
+	      reporter.incrCounter("RonyCounter", "Read from map task (normal)", compressedLength);
 	      LOG.info("[Normal MOF] Read " + (compressedLength - bytesLeft) + 
 	               " bytes from map-output for " + getMapId());
 

@@ -80,6 +80,8 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
   private final TaskAttemptID taskid;
   private int currentKeyLength = -1;
   private int currentValueLength = -1;
+  private Counter ReduceInputRecs;
+  private Counter ReduceInputBytes;
   
   public ReduceContextImpl(Configuration conf, TaskAttemptID taskid,
                            RawKeyValueIterator input, 
@@ -107,6 +109,8 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
     this.valueClass = valueClass;
     this.conf = conf;
     this.taskid = taskid;
+    this.ReduceInputRecs = reporter.getCounter("RonyCounter", "Reduce Input Recs");
+    this.ReduceInputBytes = reporter.getCounter("RonyCounter", "Reduce Input Bytes");
   }
 
   /** Start processing next unique key. */
@@ -135,6 +139,7 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
       return false;
     }
     firstValue = !nextKeyIsSame;
+    ReduceInputRecs.increment(1);
     DataInputBuffer nextKey = input.getKey();
     currentRawKey.set(nextKey.getData(), nextKey.getPosition(), 
                       nextKey.getLength() - nextKey.getPosition());
@@ -147,6 +152,7 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
 
     currentKeyLength = nextKey.getLength() - nextKey.getPosition();
     currentValueLength = nextVal.getLength() - nextVal.getPosition();
+    ReduceInputBytes.increment(currentKeyLength+currentValueLength);
 
     if (isMarked) {
       backupStore.write(nextKey, nextVal);
@@ -226,6 +232,7 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
 
       // if this is the first record, we don't need to advance
       if (firstValue) {
+    	  
         firstValue = false;
         return value;
       }
